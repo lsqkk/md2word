@@ -21,6 +21,18 @@ from .template import (
 )
 
 
+# ── Front matter ───────────────────────────────────────────────────────────────
+
+
+def _strip_front_matter(text: str) -> str:
+    """Remove YAML front matter (---…---) from the beginning of markdown."""
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            return text[end + 3 :].lstrip()
+    return text
+
+
 # ── HTML parsing ────────────────────────────────────────────────────────────
 
 
@@ -407,6 +419,8 @@ def convert(
         image_max_width: Maximum image width in inches.
     """
     styles = extract_template_styles(template_path)
+
+    markdown_text = _strip_front_matter(markdown_text)
 
     html = markdown.markdown(
         markdown_text,
