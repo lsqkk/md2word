@@ -31,7 +31,10 @@
       "Bash(md2word md-example.md -t template/官方公文.docx -o test-output.docx)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(python *)",
+      "Bash(winget search *)",
+      "Bash(where inkscape *)"
     ]
   }
 }

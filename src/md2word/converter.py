@@ -12,7 +12,13 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
-from .image_utils import get_image_dimensions, resolve_image
+from .image_utils import (
+    get_image_dimensions,
+    get_svg_size,
+    is_svg_source,
+    resolve_image,
+    resolve_svg_raw,
+)
 from .template import (
     ParagraphFormat,
     extract_template_styles,
@@ -103,7 +109,7 @@ def _push_run(p, text: str, base_fmt: ParagraphFormat, **overrides) -> None:
             setattr(run.font, k, v)
 
 
-def _build_runs(p, elem: ET.Element, base_fmt: ParagraphFormat) -> None:
+def _build_runs(doc: Document, p, elem: ET.Element, base_fmt: ParagraphFormat) -> None:
     """Populate a docx paragraph with runs reflecting inline HTML tags."""
 
     def _push_detect(text: str, **overrides):
@@ -137,13 +143,20 @@ def _build_runs(p, elem: ET.Element, base_fmt: ParagraphFormat) -> None:
         elif tag == "img":
             src = child.get("src", "")
             alt = child.get("alt", "")
-            stream = resolve_image(src)
-            if stream is not None:
-                w, h = get_image_dimensions(stream, max_width_inches=4.0)
-                run = p.add_run()
-                run.add_picture(stream, width=w, height=h)
+            if is_svg_source(src):
+                svg_data = resolve_svg_raw(src)
+                if svg_data:
+                    _embed_svg_in_paragraph(doc, p, svg_data, alt, 4.0)
+                else:
+                    _push_run(p, f"[SVG: {alt}]", base_fmt, italic=True)
             else:
-                _push_run(p, f"[Image: {alt}]", base_fmt, italic=True)
+                stream = resolve_image(src)
+                if stream is not None:
+                    w, h = get_image_dimensions(stream, max_width_inches=4.0)
+                    run = p.add_run()
+                    run.add_picture(stream, width=w, height=h)
+                else:
+                    _push_run(p, f"[Image: {alt}]", base_fmt, italic=True)
         else:
             _push_run(p, child.text or "", base_fmt)
 
@@ -200,6 +213,86 @@ def _add_bottom_border(p, color: str = "CCCCCC", sz: str = "6") -> None:
     pPr.append(pBdr)
 
 
+# ── SVG embedder ──────────────────────────────────────────────────────────────
+
+
+def _embed_svg_in_paragraph(
+    doc: Document, p, svg_data: bytes, alt: str = "",
+    max_width_inches: float = 5.5,
+) -> None:
+    """Embed SVG directly in *p* via OPC-level ``asvg:svgBlip``."""
+    from docx.oxml import parse_xml
+    from docx.package import ImagePart
+
+    size = get_svg_size(svg_data)
+    if size is None:
+        _push_run(p, f"[SVG: {alt}]", ParagraphFormat(), italic=True)
+        return
+    w_px, h_px = size
+
+    max_px = max_width_inches * 96
+    if w_px > max_px:
+        scale = max_px / w_px
+        w_px = int(w_px * scale)
+        h_px = int(h_px * scale)
+
+    emu_w = w_px * 914400 // 96
+    emu_h = h_px * 914400 // 96
+
+    partname = doc.part.package.next_partname("/word/media/image%d.svg")
+    svg_part = ImagePart(partname, "image/svg+xml", svg_data)
+    svg_part._package = doc.part.package
+
+    rId = doc.part.relate_to(
+        svg_part,
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+    )
+
+    xml = (
+        f'<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        f'  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+        f'  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        f'  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+        f'  xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"'
+        f'  xmlns:asvg="http://schemas.microsoft.com/office/drawing/2020/SVG">'
+        f'  <wp:inline distT="0" distB="0" distL="0" distR="0">'
+        f'    <wp:extent cx="{emu_w}" cy="{emu_h}"/>'
+        f'    <wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'    <wp:docPr id="0" name="SVG" descr="{alt}"/>'
+        f'    <wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
+        f'    <a:graphic>'
+        f'      <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'        <pic:pic>'
+        f'          <pic:nvPicPr>'
+        f'            <pic:cNvPr id="0" name="SVG"/>'
+        f'            <pic:cNvPicPr/>'
+        f'          </pic:nvPicPr>'
+        f'          <pic:blipFill>'
+        f'            <a:blip r:embed="{rId}">'
+        f'              <a:extLst>'
+        f'                <a:ext uri="{{96DAC541-7B7A-43D3-8B79-5D63384654D6}}">'
+        f'                  <asvg:svgBlip r:embed="{rId}"/>'
+        f'                </a:ext>'
+        f'              </a:extLst>'
+        f'            </a:blip>'
+        f'            <a:srcRect/>'
+        f'            <a:stretch><a:fillRect/></a:stretch>'
+        f'          </pic:blipFill>'
+        f'          <pic:spPr>'
+        f'            <a:xfrm><a:off x="0" y="0"/><a:ext cx="{emu_w}" cy="{emu_h}"/></a:xfrm>'
+        f'            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        f'          </pic:spPr>'
+        f'        </pic:pic>'
+        f'      </a:graphicData>'
+        f'    </a:graphic>'
+        f'  </wp:inline>'
+        f'</w:drawing>'
+    )
+
+    run = p.add_run()
+    run._r.append(parse_xml(xml))
+
+
 def _style_table(table) -> None:
     tbl = table._tbl
     tblPr = tbl.tblPr
@@ -225,7 +318,7 @@ def _handle_heading(
     slot = styles.get(f"h{level}") or styles.get("body", ParagraphFormat())
     p = doc.add_paragraph()
     slot.apply_to_paragraph(p)
-    _build_runs(p, elem, slot)
+    _build_runs(doc, p, elem, slot)
     _set_outline_level(p, level)
 
 
@@ -250,25 +343,35 @@ def _handle_paragraph(doc: Document, elem: ET.Element, styles: dict) -> None:
 
     p = doc.add_paragraph()
     fmt.apply_to_paragraph(p)
-    _build_runs(p, elem, fmt)
+    _build_runs(doc, p, elem, fmt)
 
 
 def _handle_image(doc: Document, elem: ET.Element, styles: dict) -> None:
-    """Image with alt-text caption below."""
+    """Image with alt-text caption below. Supports raster and SVG."""
     src = elem.get("src", "")
     alt = elem.get("alt", "")
-    stream = resolve_image(src)
-    if stream is None:
-        p = doc.add_paragraph()
-        _push_run(p, f"[Image: {alt}]", ParagraphFormat(), italic=True)
-        return
-
     img_fmt = styles.get("image", ParagraphFormat())
-    p = doc.add_paragraph()
-    img_fmt.apply_to_paragraph(p)
-    width, height = get_image_dimensions(stream, max_width_inches=5.5)
-    run = p.add_run()
-    run.add_picture(stream, width=width, height=height)
+
+    if is_svg_source(src):
+        svg_data = resolve_svg_raw(src)
+        if svg_data is None:
+            p = doc.add_paragraph()
+            _push_run(p, f"[SVG: {alt}]", ParagraphFormat(), italic=True)
+            return
+        p = doc.add_paragraph()
+        img_fmt.apply_to_paragraph(p)
+        _embed_svg_in_paragraph(doc, p, svg_data, alt, max_width_inches=5.5)
+    else:
+        stream = resolve_image(src)
+        if stream is None:
+            p = doc.add_paragraph()
+            _push_run(p, f"[Image: {alt}]", ParagraphFormat(), italic=True)
+            return
+        p = doc.add_paragraph()
+        img_fmt.apply_to_paragraph(p)
+        width, height = get_image_dimensions(stream, max_width_inches=5.5)
+        run = p.add_run()
+        run.add_picture(stream, width=width, height=height)
 
     if alt:
         cap_fmt = styles.get("figcaption", ParagraphFormat())
@@ -293,11 +396,11 @@ def _handle_blockquote(doc: Document, elem: ET.Element, styles: dict) -> None:
         if child.tag == "p":
             p = doc.add_paragraph()
             fmt.apply_to_paragraph(p)
-            _build_runs(p, child, fmt)
+            _build_runs(doc, p, child, fmt)
         else:
             p = doc.add_paragraph()
             fmt.apply_to_paragraph(p)
-            _build_runs(p, child if child.tag else elem, fmt)
+            _build_runs(doc, p, child if child.tag else elem, fmt)
 
 
 def _handle_code_block(doc: Document, elem: ET.Element, styles: dict) -> None:
@@ -324,7 +427,7 @@ def _handle_unordered_list(
             p.paragraph_format.left_indent = Inches(0.5)
         bullet = p.add_run("• ")
         fmt.apply_to_run(bullet)
-        _build_runs(p, li, fmt)
+        _build_runs(doc, p, li, fmt)
 
 
 def _handle_ordered_list(
@@ -338,7 +441,7 @@ def _handle_ordered_list(
         if fmt.left_indent_emu is None:
             p.paragraph_format.left_indent = Inches(0.5)
         _push_run(p, f"{idx}. ", fmt)
-        _build_runs(p, li, fmt)
+        _build_runs(doc, p, li, fmt)
 
 
 def _handle_table(doc: Document, elem: ET.Element, styles: dict) -> None:
@@ -369,7 +472,7 @@ def _handle_table(doc: Document, elem: ET.Element, styles: dict) -> None:
                 _push_run(p, _inline_text(cell), body_fmt, bold=True)
             else:
                 body_fmt.apply_to_paragraph(p)
-                _build_runs(p, cell, body_fmt)
+                _build_runs(doc, p, cell, body_fmt)
     _style_table(table)
 
 

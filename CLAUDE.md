@@ -2,6 +2,7 @@
 
 ## Technology
 - Python 3.11+, python-docx, markdown, Pillow, requests
+- SVG: native `asvg:svgBlip` embedding via `resvg` (optional, `pip install md2word[svg]`)
 - CLI entry via `md2word` command (registered system-wide)
 
 ## Structure
