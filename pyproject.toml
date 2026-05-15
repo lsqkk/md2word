@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "md2word"
+version = "1.0.0"
+description = "Convert Markdown to Word (.docx) using custom template styles"
+requires-python = ">=3.10"
+dependencies = [
+    "python-docx>=1.0",
+    "markdown>=3.5",
+    "Pillow>=10",
+    "requests>=2.28",
+]
+
+[project.scripts]
+md2word = "md2word.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

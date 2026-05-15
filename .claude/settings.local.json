@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip list *)",
+      "Bash(pip install *)",
+      "Bash(md2word --create-template template/template1.docx)",
+      "Bash(md2word --list-styles -t template/template1.docx)",
+      "Bash(md2word md-example.md -o test-output.docx)",
+      "Bash(powershell *)",
+      "Bash(python3 -c ' *)",
+      "Bash(md2word --version)",
+      "Bash(md2word -o stdin-test.docx)",
+      "Bash(md2word --help)",
+      "Bash(md2word --list-themes)",
+      "Bash(md2word --create-template template/template1.docx --theme official)",
+      "Bash(md2word --create-template template/template2.docx --theme academic)",
+      "Bash(md2word --create-template template/template3.docx --theme tech)",
+      "Bash(md2word --create-template template/template4.docx --theme media)",
+      "Bash(md2word --list-styles -t template/template2.docx)",
+      "Bash(md2word --list-styles -t template/template3.docx)",
+      "Bash(md2word --list-styles -t template/template4.docx)",
+      "Bash(rm -f template/template1.docx template/template2.docx template/template3.docx template/template4.docx)",
+      "Bash(md2word --create-template template/官方公文.docx --theme official)",
+      "Bash(md2word --create-template template/学术论文.docx --theme academic)",
+      "Bash(md2word --create-template template/技术文档.docx --theme tech)",
+      "Bash(md2word --create-template template/自媒体排版.docx --theme media)",
+      "Bash(md2word --list-styles -t template/官方公文.docx)",
+      "Bash(md2word --list-styles -t template/学术论文.docx)",
+      "Bash(md2word --list-styles -t template/技术文档.docx)",
+      "Bash(md2word --list-styles -t template/自媒体排版.docx)",
+      "Bash(md2word md-example.md -t template/官方公文.docx -o test-output.docx)",
+      "Bash(git add *)"
+    ]
+  }
+}
