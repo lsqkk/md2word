@@ -29,7 +29,9 @@
       "Bash(md2word --list-styles -t template/技术文档.docx)",
       "Bash(md2word --list-styles -t template/自媒体排版.docx)",
       "Bash(md2word md-example.md -t template/官方公文.docx -o test-output.docx)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(gh auth *)"
     ]
   }
 }
