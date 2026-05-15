@@ -638,7 +638,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # Template
-    tpl = args.template or _find_default_template()
+    tpl = args.template or _find_default_template(args.theme)
     if not tpl:
         print("No template specified and no default found.", file=sys.stderr)
         print("Generate one: md2word --create-template template.docx")
@@ -653,8 +653,15 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _find_default_template() -> Path | None:
+def _find_default_template(theme: str | None = None) -> Path | None:
     """Find default template — prefers theme-named files in template/."""
+    if theme and theme in _THEMES:
+        filename = _THEMES[theme]["filename"]
+        for base in [Path("template"), Path(__file__).parent.parent.parent / "template"]:
+            candidate = base / filename
+            if candidate.exists():
+                return candidate
+
     search = [
         Path("template/template1.docx"),
         Path("template/官方公文.docx"),
