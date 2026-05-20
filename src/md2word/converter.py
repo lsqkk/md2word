@@ -52,6 +52,11 @@ from .image_utils import (
     resolve_image,
     resolve_svg_raw,
 )
+from .footnotes import (
+    add_footnotes_to_document,
+    create_footnote_reference_run,
+    extract_footnotes,
+)
 from .math_omml import latex_to_omml as _latex_to_omml
 from .math_renderer import extract_and_placeholder, has_math, render_math_svg
 from .mermaid_renderer import render_mermaid
@@ -62,6 +67,18 @@ from .template import (
     set_run_font,
     _STYLE_KEYWORDS,
 )
+
+# Regex for footnote placeholder \x00FN_id\x00
+import re
+_FN_PLACEHOLDER_RE = re.compile(r"\x00FN_([^\x00]+)\x00")
+
+# XML-safe footnote tag
+_FN_TAG_RE = re.compile(r'<fn\s+id="([^"]+)"\s*/>')
+
+
+def _replace_fn_placeholders(html: str) -> str:
+    """Replace \\x00FN_id\\x00 → XML-safe <fn id="id"/> tags."""
+    return _FN_PLACEHOLDER_RE.sub(r'<fn id="\1"/>', html)
 
 
 # ── Front matter ───────────────────────────────────────────────────────────────
@@ -156,6 +173,118 @@ def _inline_text(elem: ET.Element) -> str:
     return "".join(parts)
 
 
+# ── globals for cross-ref bookmarks ─────────────────────────────────────────
+
+_BOOKMARK_COUNTER: int = 0
+
+
+def _next_bookmark_id() -> int:
+    global _BOOKMARK_COUNTER
+    _BOOKMARK_COUNTER += 1
+    return _BOOKMARK_COUNTER
+
+
+def _slugify(text: str) -> str:
+    """Convert text to a bookmark-friendly ASCII slug."""
+    text = text.strip().lower()
+    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[\s_]+", "-", text)
+    text = re.sub(r"-+", "-", text)
+    return text.strip("-") or "ref"
+
+
+def _add_bookmark(paragraph, name: str) -> str:
+    """Add a bookmark (start + end) around a paragraph.
+
+    Returns the unique bookmark name (may be suffixed if name conflicts).
+    """
+    bid = _next_bookmark_id()
+    bm_name = f"_Ref{bid}"
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bid))
+    start.set(qn("w:name"), bm_name)
+    paragraph._p.insert(0, start)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bid))
+    paragraph._p.append(end)
+    return bm_name
+
+
+def _make_ref_field(display_text: str, bookmark_name: str) -> list:
+    """Create OMML runs for a REF field pointing to a bookmark.
+
+    Returns a list of OxmlElement runs.
+    """
+    runs = []
+    # begin
+    r1 = OxmlElement("w:r")
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    r1.append(fld_begin)
+    runs.append(r1)
+    # instrText
+    r2 = OxmlElement("w:r")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = f' REF {bookmark_name} \\h '
+    r2.append(instr)
+    runs.append(r2)
+    # separate
+    r3 = OxmlElement("w:r")
+    fld_sep = OxmlElement("w:fldChar")
+    fld_sep.set(qn("w:fldCharType"), "separate")
+    r3.append(fld_sep)
+    runs.append(r3)
+    # display text (what Word shows when fields are not updated)
+    r4 = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = display_text
+    r4.append(t)
+    runs.append(r4)
+    # end
+    r5 = OxmlElement("w:r")
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    r5.append(fld_end)
+    runs.append(r5)
+    return runs
+
+
+def _add_seq_number(p, seq_name: str = "Equation") -> None:
+    """Add a SEQ field to a paragraph for auto-numbering."""
+    # begin
+    r1 = OxmlElement("w:r")
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    r1.append(fld_begin)
+    p._p.append(r1)
+    # instrText
+    r2 = OxmlElement("w:r")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = f" SEQ {seq_name} \\* ARABIC"
+    r2.append(instr)
+    p._p.append(r2)
+    # separate
+    r3 = OxmlElement("w:r")
+    fld_sep = OxmlElement("w:fldChar")
+    fld_sep.set(qn("w:fldCharType"), "separate")
+    r3.append(fld_sep)
+    p._p.append(r3)
+    # display text
+    r4 = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "1"
+    r4.append(t)
+    p._p.append(r4)
+    # end
+    r5 = OxmlElement("w:r")
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    r5.append(fld_end)
+    p._p.append(r5)
+
+
 # ── run/paragraph helpers ───────────────────────────────────────────────────
 
 
@@ -179,11 +308,44 @@ def _push_run(p, text: str, base_fmt: ParagraphFormat, **overrides) -> None:
             setattr(run.font, k, v)
 
 
-def _build_runs(doc: Document, p, elem: ET.Element, base_fmt: ParagraphFormat) -> None:
-    """Populate a docx paragraph with runs reflecting inline HTML tags."""
+def _push_text_with_footnotes(
+    p, text: str, base_fmt: ParagraphFormat,
+    fn_map: dict[str, int],
+    **overrides,
+) -> None:
+    """Push *text*, splitting on footnote placeholders."""
+    parts = _FN_PLACEHOLDER_RE.split(text)
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+        if i % 2 == 0:
+            # Regular text
+            _push_run(p, part, base_fmt, **overrides)
+        else:
+            # Footnote reference
+            fn_id = fn_map.get(part)
+            if fn_id is not None:
+                p._p.append(create_footnote_reference_run(None, fn_id))
+            else:
+                _push_run(p, f"[{part}]", base_fmt, **overrides)
+
+
+def _build_runs(
+    doc: Document,
+    p,
+    elem: ET.Element,
+    base_fmt: ParagraphFormat,
+    fn_map: dict[str, int] | None = None,
+) -> None:
+    """Populate a docx paragraph with runs reflecting inline HTML tags.
+
+    If *fn_map* is provided, footnote placeholders are converted to
+    Word footnote reference marks.
+    """
+    _fn_map = fn_map or {}
 
     def _push_detect(text: str, **overrides):
-        """Push text, detecting markdown checkboxes [x]/[ ]."""
+        """Push text, detecting checkboxes."""  # footnotes handled as <fn> tags
         if not text:
             return
         if text.startswith("[x] ") or text.startswith("[X] "):
@@ -208,8 +370,19 @@ def _build_runs(doc: Document, p, elem: ET.Element, base_fmt: ParagraphFormat) -
         elif tag == "code":
             _push_run(p, child.text or "", base_fmt, name="DengXian")
         elif tag == "a":
-            txt = child.text or child.get("href", "")
-            _push_run(p, txt, base_fmt, underline=True, color=RGBColor(0x00, 0x52, 0xCC))
+            href = child.get("href", "")
+            txt = child.text or href
+            if href.startswith("#"):
+                # Cross-reference to a bookmark
+                target = href[1:]
+                for ref_run in _make_ref_field(txt, target):
+                    p._p.append(ref_run)
+            else:
+                _push_run(p, txt, base_fmt, underline=True, color=RGBColor(0x00, 0x52, 0xCC))
+        elif tag == "fn":
+            fn_id_attr = child.get("id", "")
+            if _fn_map and fn_id_attr in _fn_map:
+                p._p.append(create_footnote_reference_run(None, _fn_map[fn_id_attr]))
         elif tag == "img":
             src = child.get("src", "")
             alt = child.get("alt", "")
@@ -452,19 +625,39 @@ def _insert_block_omml(doc: Document, omml_xml: str) -> None:
     p._p.append(parse_xml(omml_xml))
 
 
-def _style_table(table) -> None:
+def _style_table(table, three_line: bool = False) -> None:
     tbl = table._tbl
     tblPr = tbl.tblPr
     for existing in list(tblPr.findall(qn("w:tblBorders"))):
         tblPr.remove(existing)
     borders = OxmlElement("w:tblBorders")
-    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        el = OxmlElement(f"w:{edge}")
-        el.set(qn("w:val"), "single")
-        el.set(qn("w:sz"), "4")
-        el.set(qn("w:space"), "0")
-        el.set(qn("w:color"), "999999")
-        borders.append(el)
+
+    if three_line:
+        # Academic three-line table: thick top, medium header-bottom, thick bottom
+        for edge, sz, color in [
+            ("top", "12", "000000"),
+            ("bottom", "12", "000000"),
+            ("insideH", "6", "000000"),
+        ]:
+            el = OxmlElement(f"w:{edge}")
+            el.set(qn("w:val"), "single")
+            el.set(qn("w:sz"), sz)
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), color)
+            borders.append(el)
+        # No vertical or side borders
+        for edge in ("left", "right", "insideV"):
+            el = OxmlElement(f"w:{edge}")
+            el.set(qn("w:val"), "none")
+            borders.append(el)
+    else:
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            el = OxmlElement(f"w:{edge}")
+            el.set(qn("w:val"), "single")
+            el.set(qn("w:sz"), "4")
+            el.set(qn("w:space"), "0")
+            el.set(qn("w:color"), "999999")
+            borders.append(el)
     tblPr.append(borders)
 
 
@@ -508,6 +701,7 @@ def _handle_heading(
     doc: Document, elem: ET.Element, level: int, styles: dict,
     number_headings: bool = False,
     page_break: bool = False,
+    fn_map: dict[str, int] | None = None,
 ) -> None:
     slot = styles.get(f"h{level}") or styles.get("body", ParagraphFormat())
     if page_break and level == 1:
@@ -518,11 +712,19 @@ def _handle_heading(
         num = _next_heading_number(level)
         if num:
             _push_run(p, f"{num} ", slot)
-    _build_runs(doc, p, elem, slot)
+    _build_runs(doc, p, elem, slot, fn_map=fn_map)
     _set_outline_level(p, level)
+    # Add bookmark from heading text for cross-references
+    heading_text = _inline_text(elem)
+    if heading_text:
+        _add_bookmark(p, _slugify(heading_text))
 
 
-def _handle_paragraph(doc: Document, elem: ET.Element, styles: dict, image_max_width: float = 5.5) -> None:
+def _handle_paragraph(
+    doc: Document, elem: ET.Element, styles: dict,
+    image_max_width: float = 5.5,
+    fn_map: dict[str, int] | None = None,
+) -> None:
     """Normal paragraph — detects lone images and embedded <br>."""
     imgs = elem.findall("img")
     if len(imgs) == 1 and not elem.text and not any(
@@ -546,7 +748,7 @@ def _handle_paragraph(doc: Document, elem: ET.Element, styles: dict, image_max_w
 
     p = doc.add_paragraph()
     fmt.apply_to_paragraph(p)
-    _build_runs(doc, p, elem, fmt)
+    _build_runs(doc, p, elem, fmt, fn_map=fn_map)
 
 
 def _handle_image(doc: Document, elem: ET.Element, styles: dict, image_max_width: float = 5.5) -> None:
@@ -619,20 +821,25 @@ def _handle_image(doc: Document, elem: ET.Element, styles: dict, image_max_width
             cap_fmt.apply_to_paragraph(p_cap)
             r = p_cap.add_run(alt)
             cap_fmt.apply_to_run(r)
+        # Add bookmark for figure cross-references
+        _add_bookmark(p_cap, f"fig-{_slugify(alt)}")
 
 
-def _handle_blockquote(doc: Document, elem: ET.Element, styles: dict) -> None:
+def _handle_blockquote(
+    doc: Document, elem: ET.Element, styles: dict,
+    fn_map: dict[str, int] | None = None,
+) -> None:
     """Blockquote — process child <p> elements (fixes truncation bug)."""
     fmt = styles.get("quote", styles.get("body", ParagraphFormat()))
     for child in elem:
         if child.tag == "p":
             p = doc.add_paragraph()
             fmt.apply_to_paragraph(p)
-            _build_runs(doc, p, child, fmt)
+            _build_runs(doc, p, child, fmt, fn_map=fn_map)
         else:
             p = doc.add_paragraph()
             fmt.apply_to_paragraph(p)
-            _build_runs(doc, p, child if child.tag else elem, fmt)
+            _build_runs(doc, p, child if child.tag else elem, fmt, fn_map=fn_map)
 
 
 def _handle_code_block(doc: Document, elem: ET.Element, styles: dict,
@@ -817,7 +1024,12 @@ def _build_runs_img(doc, p, child, base_fmt):
             run.add_picture(stream, width=w, height=h)
 
 
-def _handle_table(doc: Document, elem: ET.Element, styles: dict) -> None:
+def _handle_table(
+    doc: Document, elem: ET.Element, styles: dict,
+    three_line: bool = False,
+    fn_map: dict[str, int] | None = None,
+    table_idx: int = 0,
+) -> None:
     """Markdown table."""
     rows_elem = elem.findall(".//tr")
     if not rows_elem:
@@ -845,8 +1057,10 @@ def _handle_table(doc: Document, elem: ET.Element, styles: dict) -> None:
                 _push_run(p, _inline_text(cell), body_fmt, bold=True)
             else:
                 body_fmt.apply_to_paragraph(p)
-                _build_runs(doc, p, cell, body_fmt)
-    _style_table(table)
+                _build_runs(doc, p, cell, body_fmt, fn_map=fn_map)
+    _style_table(table, three_line=three_line)
+    # Add bookmark for table cross-references
+    _add_bookmark(table.rows[0].cells[0].paragraphs[0], f"tbl-{table_idx}")
 
 
 def _handle_horizontal_rule(doc: Document, styles: dict) -> None:
@@ -890,6 +1104,9 @@ def convert(
     mermaid_enabled: bool = True,
     number_headings: bool = False,
     page_break_h1: bool = False,
+    three_line_table: bool = False,
+    footnotes_enabled: bool = True,
+    formula_numbering: bool = False,
 ) -> None:
     """Convert *markdown_text* to a Word document.
 
@@ -900,12 +1117,21 @@ def convert(
         image_max_width: Maximum image width in inches.
         toc: Whether to generate a Table of Contents.
         toc_depth: Heading levels to include, e.g. "1-3".
+        three_line_table: Use academic three-line table style.
+        footnotes_enabled: Process footnote syntax [^id].
+        formula_numbering: Add SEQ equation numbers to block math.
     """
     styles = extract_template_styles(template_path)
     report = ConversionReport()
     styles["_report"] = report
 
     markdown_text = _strip_front_matter(markdown_text)
+
+    # ── Footnote preprocessing ────────────────────────────────────────────
+    fn_list: list = []
+    fn_map: dict[str, int] = {}
+    if footnotes_enabled:
+        markdown_text, fn_list = extract_footnotes(markdown_text)
 
     # ── Math preprocessing: extract LaTeX expressions ──────────────────────
     if math_enabled:
@@ -929,6 +1155,10 @@ def convert(
     if math_exprs:
         html = _postprocess_math_html(html, math_exprs)
 
+    # ── Replace footnote placeholders with safe HTML tags ────────────
+    if fn_list:
+        html = _replace_fn_placeholders(html)
+
     blocks = _html_to_blocks(html)
 
     doc = Document(str(template_path))
@@ -940,7 +1170,6 @@ def convert(
         p.getparent().remove(p)
 
     # ── Table of Contents (inserted after the first h1 heading) ─────────
-    # If no h1 is found, TOC goes at the beginning (current behaviour).
     _toc_pending = toc
     check_blocks = list(blocks)
     if _toc_pending and not any(b.tag == "h1" for b in check_blocks):
@@ -948,8 +1177,6 @@ def convert(
         _toc_pending = False
 
     # Set Word to update fields (e.g. TOC) on open
-    from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
     settings_el = doc.settings._element
     up = settings_el.find(qn("w:updateFields"))
     if up is None:
@@ -963,36 +1190,58 @@ def convert(
     if number_headings:
         _reset_heading_counters()
 
+    # ── Add footnotes to doc (before block processing for fn_map) ─────────
+    if fn_list:
+        fn_map = add_footnotes_to_document(doc, fn_list)
+
+    # ── Process blocks ────────────────────────────────────────────────────
+    table_counter = [0]
+
     for block in blocks:
         tag = block.tag
         try:
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
                 _handle_heading(doc, block, int(tag[1]), styles,
                                 number_headings=number_headings,
-                                page_break=page_break_h1)
+                                page_break=page_break_h1,
+                                fn_map=fn_map if fn_list else None)
                 if _toc_pending and tag == "h1":
                     _add_toc(doc, styles, depth=toc_depth)
                     _toc_pending = False
             elif tag == "p":
-                _handle_paragraph(doc, block, styles, image_max_width=image_max_width)
+                _handle_paragraph(doc, block, styles,
+                                  image_max_width=image_max_width,
+                                  fn_map=fn_map if fn_list else None)
             elif tag == "img":
-                _handle_image(doc, block, styles, image_max_width=image_max_width)
+                _handle_image(doc, block, styles,
+                              image_max_width=image_max_width)
+                # Formula numbering for block-level math
+                if formula_numbering and block.get("class", "").startswith("math-block"):
+                    p_num = doc.add_paragraph()
+                    p_num.paragraph_format.alignment = 3  # right
+                    _add_seq_number(p_num, "Equation")
             elif tag == "blockquote":
-                _handle_blockquote(doc, block, styles)
+                _handle_blockquote(doc, block, styles,
+                                   fn_map=fn_map if fn_list else None)
             elif tag == "pre":
                 _handle_code_block(doc, block, styles,
-                                    highlight_enabled=highlight_enabled,
-                                    mermaid_enabled=mermaid_enabled)
+                                   highlight_enabled=highlight_enabled,
+                                   mermaid_enabled=mermaid_enabled)
             elif tag == "ul":
                 _handle_unordered_list(doc, block, styles)
             elif tag == "ol":
                 _handle_ordered_list(doc, block, styles)
             elif tag == "table":
-                _handle_table(doc, block, styles)
+                _handle_table(doc, block, styles,
+                              three_line=three_line_table,
+                              fn_map=fn_map if fn_list else None,
+                              table_idx=table_counter[0])
+                table_counter[0] += 1
             elif tag == "hr":
                 _handle_horizontal_rule(doc, styles)
             else:
-                _handle_paragraph(doc, block, styles)
+                _handle_paragraph(doc, block, styles,
+                                  fn_map=fn_map if fn_list else None)
         except Exception as e:
             report.warn(f"Failed to process <{tag}> block: {e}")
 

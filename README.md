@@ -1,218 +1,272 @@
 # md2word — Markdown 转 Word 文档工具
 
-> English version: [README-en.md](README-en.md)
+> 中文 | [English](README-en.md)
 
-将 Markdown 文档转换为格式精美的 Word (.docx) 文件，支持自定义样式模板。支持图片（本地/URL）、表格、代码高亮、数学公式、Mermaid 图表、任务列表、目录、标题编号等。
+将 Markdown 文档转换为格式精美的 Word (.docx) 文件，基于**模板引导段落**实现样式自定义——在 Word 中改格式，工具自动适配，无需写 CSS 或代码。
+
+```bash
+pip install -e ".[all]"
+md2word input.md -o output.docx
+```
+
+## 亮点
+
+- **模板即样式**：Word 中的「一级标题」「正文」等引导段落 = 样式定义。在 Word 里改字体、字号、颜色，工具自动读取并应用，**不需要写 CSS、不需要改代码**
+- **四套内置主题**：学术论文、官方公文、技术文档、自媒体排版，开箱即用
+- **LaTeX 公式 → Word OMML**：基于 matplotlib + latex2mathml，公式在 Word 中**原生可编辑**，非截图
+- **Mermaid 图表**：流程图、时序图、甘特图自动渲染为 SVG 嵌入
+- **代码语法高亮**：Pygments 驱动，200+ 语言着色
+- **脚注**：Markdown 标准 `[^1]` 语法 → Word 原生脚注
+- **三线表**：学术期刊风格的 `--three-line-table`
+- **交叉引用**：Markdown 内链 → Word REF 域，Ctrl+F9 更新
+- **目录 + 标题编号 + 分页**：一键生成 TOC、自动编号、H1 前分页
+- **Watch 模式**：监听文件变化自动重新转换
+- **配置文件**：`md2word.yaml` 保存常用参数，减少命令行输入
+- **零模板依赖**：不装任何模板也能用——自动搜索内置主题
 
 ## 安装
 
-```bash
-pip install -e .
-# 可选增强功能：
-pip install -e ".[highlight]"   # 代码语法高亮（Pygments）
-pip install -e ".[math]"        # 数学公式渲染（matplotlib）
-pip install -e ".[svg]"         # SVG 支持（resvg）
-pip install -e ".[all]"         # 全部功能
-```
-
 需要 Python 3.10+。
 
-## 用法
+```bash
+# 从项目根目录安装
+pip install -e .
+
+# 安装全部可选增强
+pip install -e ".[all]"
+```
+
+可选依赖按需安装：
+
+| 组件 | 安装命令 | 功能 |
+|------|---------|------|
+| 代码高亮 | `pip install -e ".[highlight]"` | Pygments 语法着色 |
+| 数学公式 | `pip install -e ".[math]"` | LaTeX → OMML/SVG |
+| SVG 支持 | `pip install -e ".[svg]"` | 原生 SVG 嵌入 |
+| 配置/监听 | `pip install -e ".[all]"` | YAML 配置 + Watch 模式 |
+
+查看可用组件：
 
 ```bash
-# 基本转换
-md2word input.md -o output.docx
+md2word --check-deps
+```
+
+## 快速开始
+
+```bash
+# 基本转换（自动使用内置学术论文模板）
+md2word 文章.md -o 文章.docx
+
+# 指定主题
+md2word 文章.md --theme academic -o 文章.docx
 
 # 使用自定义模板
-md2word input.md -t 模板文件.docx -o output.docx
+md2word 文章.md -t 我的模板.docx -o 文章.docx
 
-# 批量转换（同时处理多个文件）
-md2word chapter1.md chapter2.md chapter3.md
+# 批量转换
+md2word 第一章.md 第二章.md 第三章.md
 
-# 列出可用主题
-md2word --list-themes
+# 标准输入
+cat 文章.md | md2word -o 文章.docx
+```
 
-# 生成模板以便自定义
+## 内置主题
+
+| 主题 | 适用场景 | 风格特征 |
+|------|---------|---------|
+| `academic` | 学位论文、期刊投稿 | 宋体系列 + 黑体标题居中 + 首行缩进 + 标准学术版心 |
+| `official` | 政府公文、红头文件 | 仿宋三号正文 + 黑体标题 + GB 标准页边距 |
+| `tech` | 技术文档、API 手册 | 微软雅黑 + 深蓝层级标题 + 紧凑排版 + Consolas 代码 |
+| `media` | 公众号、自媒体 | 大号标题(32pt) + 橙色品牌色 + 1.8 倍高行距 + 楷体引用 |
+
+## 进阶用法
+
+### 学术排版
+
+```bash
+md2word 论文.md --theme academic --toc --number-headings --three-line-table --page-break
+```
+
+一键生成：目录、层级编号 (1/1.1/1.1.1)、三线表、每章分页。
+
+### 脚注
+
+```markdown
+Markdown 标准语法[^1]，自动转为 Word 原生脚注。
+
+[^1]: 这是脚注内容，可跨多行。
+```
+
+### 交叉引用
+
+```markdown
+参考[数据说明](#数据说明)。      → 生成 Word REF 域
+详细设置见[表1](#表1)。          → 引用表格
+请参见[图1](#图1)。              → 引用图片
+```
+
+在 Word 中按 Ctrl+A → F9 更新域，自动填充标题/编号。
+
+### 数学公式
+
+```markdown
+内联公式：$E = mc^2$
+块级公式：$$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$$
+```
+
+支持 LaTeX → Word OMML（原生可编辑公式）并自动编号。
+
+### 三线表
+
+```bash
+md2word 论文.md --three-line-table
+```
+
+学术期刊风格表格：顶线/底线加粗、表头下线、无竖线。
+
+### Watch 模式
+
+```bash
+md2word 文章.md --watch
+```
+
+文件变化后自动重新转换，适合写作时实时预览。
+
+### 配置文件
+
+创建 `md2word.yaml` 于项目目录：
+
+```yaml
+theme: academic
+toc: true
+toc-depth: 1-3
+number-headings: true
+three-line-table: true
+```
+
+之后只需 `md2word input.md` 即可——参数自动读取。CLI 参数优先级高于配置文件。
+
+## 自定义模板
+
+**不需要写代码。** 在 Word 中新建 docx，插入以下关键词段落，调整格式，保存即可：
+
+| 引导段落 | 对应元素 |
+|---------|---------|
+| 一级标题 | `# 标题` |
+| 二级标题 | `## 标题` |
+| 三级标题 | `### 标题` |
+| 正文 | 普通段落 |
+| 首行缩进 | 首行缩进的正文 |
+| 图片 | 图片容器 |
+| 图注 | 图片说明 |
+| 引用 | `> 引用块` |
+| 代码 | 代码块 |
+| 无序列表 | `- 列表项` |
+| 有序列表 | `1. 列表项` |
+| 目录标题 | 目录上方标题 |
+
+工具的检测规则：按段落**从头到尾**匹配关键词，**先匹配到的优先**。
+
+快速生成模板：
+
+```bash
+# 基于学术主题生成模板
 md2word --create-template 我的模板.docx --theme academic
 
 # 验证模板完整性
 md2word --validate-template 我的模板.docx
 
-# 查看模板样式
-md2word --list-styles -t 模板文件.docx
+# 查看模板识别的样式
+md2word --list-styles -t 我的模板.docx
 ```
 
-也可读取标准输入：
-
-```bash
-cat document.md | md2word -o output.docx
-```
-
-## 新功能介绍
-
-### 目录生成
-```bash
-md2word input.md --toc --toc-depth 1-3
-```
-自动在文档开头生成 Word 目录域，在 Word 中按 Ctrl+A → F9 更新即可显示。支持通过 `--no-toc` 关闭。
-
-### 代码语法高亮
-```bash
-md2word input.md  # 自动启用（需安装 Pygments）
-md2word input.md --no-highlight  # 禁用
-```
-代码块自动检测语言并应用彩色高亮，支持 200+ 编程语言。关键词语句粗体、注释斜体、字符串/数字/关键字分别着色。
-
-### 数学公式
-```bash
-md2word input.md  # 自动启用（需安装 matplotlib）
-md2word input.md --no-math  # 禁用
-```
-支持 `$...$` 内联公式和 `$$...$$` 块级公式：
-- `$E = mc^2$` → 内联渲染
-- `$$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$$` → 块级渲染
-
-LaTeX 公式渲染为 SVG 嵌入文档，清晰无限缩放。
-
-### Mermaid 图表
-````markdown
-```mermaid
-graph TD
-    A[开始] --> B[结束]
-```
-````
-```bash
-md2word input.md  # 自动启用
-md2word input.md --no-mermaid  # 禁用
-```
-Mermaid 图表通过 mermaid.ink API 渲染为 SVG，无需本地安装。也支持通过 `mmdc` CLI 本地渲染（需安装 `@mermaid-js/mermaid-cli`）。
-
-### 标题编号
-```bash
-md2word input.md --number-headings
-```
-自动为标题添加层级编号（1, 1.1, 1.1.1, ...），适用于学术论文和技术文档。
-
-### 页面分隔
-```bash
-md2word input.md --page-break
-```
-每级 H1 标题前自动插入分页符，适合长文档按章节分页。
-
-### 批量转换
-```bash
-md2word doc1.md doc2.md doc3.md
-```
-同时转换多个 Markdown 文件，每个生成同名的 `.docx` 文件，并显示转换进度。
-
-### 模板验证
-```bash
-md2word --validate-template 我的模板.docx
-```
-检查模板中是否包含所有必需的引导段落（一级标题、二级标题、三级标题、正文、代码），并提示推荐添加的段落。
-
-## 工作原理
-
-工具通过模板 docx 中的**引导段落**来识别样式。每个引导段落包含一个关键词，告诉工具它代表什么样式元素。工具读取该段落的**格式**（字体、字号、颜色、对齐、缩进等），并应用到对应的 Markdown 内容上。
-
-| 关键词 | 样式槽 | Markdown 元素 |
-|--------|--------|---------------|
-| 一级标题 | h1 | `# 标题` |
-| 二级标题 | h2 | `## 标题` |
-| 三级标题 | h3 | `### 标题` |
-| 正文 | body | 普通段落 |
-| 首行缩进 | body_indent | 首行缩进的正文 |
-| 图片 | image | 图片容器 |
-| 图注 | figcaption | 图片说明（alt 文本） |
-| 引用 | quote | `> 引用块` |
-| 代码 | code | 代码块 |
-| 无序列表 | bullet_list | `- 项目` |
-| 有序列表 | number_list | `1. 项目` |
-| 目录标题 | toc_title | 目录标题 |
-
-**自定义方法**：在 Word 中打开生成的模板，修改引导段落的格式，保存即可。工具会自动检测您的更改。
-
-## 内置主题
-
-### 官方公文
-仿照《党政机关公文格式》标准：
-- 仿宋三号正文，黑体标题
-- 大字号（三号=16pt），1.5 倍行距
-- 页边距上 3.7cm/下 3.5cm/左 2.8cm/右 2.6cm
-
-### 学术论文
-严谨学术排版风格：
-- 全宋体系列，黑体标题居中
-- 首行缩进 2 字符，1.5 倍行距
-- 标准页边距（上下 2.54cm、左右 3.17cm）
-
-### 技术文档
-现代清晰技术文档风格：
-- 微软雅黑字体，深蓝色层级标题
-- 代码等宽字体（Consolas + 等线）
-- 紧凑排版，信息密度高
-
-### 自媒体排版
-视觉系自媒体排版风格：
-- 大号标题（32pt），品牌橙色点缀
-- 1.8 倍超高行距，宽松版心
-- 楷体大字号引用，舒适阅读体验
-
-## 完整 CLI 参数
+## 全部 CLI 参数
 
 | 参数 | 说明 |
 |------|------|
 | `inputs` | 输入 Markdown 文件（支持多个） |
 | `-o, --output` | 输出 .docx 路径 |
 | `-t, --template` | 模板 .docx 文件 |
+| `--theme` | 内置主题名 |
 | `--image-width` | 图片最大宽度（英寸，默认 5.5） |
 | `--toc / --no-toc` | 启用/禁用目录 |
-| `--toc-depth` | 目录标题深度（如 `1-3`） |
+| `--toc-depth` | 目录深度（如 `1-3`） |
 | `--number-headings` | 标题自动编号 |
 | `--page-break` | H1 前插入分页符 |
+| `--three-line-table` | 三线表样式 |
+| `--no-footnotes` | 禁用脚注 |
 | `--no-highlight` | 禁用代码高亮 |
 | `--no-math` | 禁用数学公式 |
 | `--no-mermaid` | 禁用 Mermaid 图表 |
+| `--watch` | 监听文件变化自动转换 |
+| `--config` | 指定配置文件路径 |
 | `--create-template` | 生成模板文件 |
-| `--theme` | 模板主题 |
-| `--list-themes` | 列出可用主题 |
-| `--list-styles` | 查看模板样式 |
 | `--validate-template` | 验证模板完整性 |
+| `--list-styles` | 查看模板样式 |
+| `--list-themes` | 列出可用主题 |
+| `--check-deps` | 检查依赖完整性 |
 | `--version` | 显示版本号 |
 
-## 功能特性
+## 依赖关系
 
-- **图片**：自动下载本地和 URL 图片，缩放至页面合适宽度
-- **图注**：图片 alt 文本自动置于图片下方居中显示
-- **任务列表**：`[x]` 和 `[ ]` 渲染为 ☑/☐ 复选框
-- **表格**：Markdown 表格渲染为浅色边框的干净表格
-- **嵌套列表**：支持无序/有序列表的无限层级嵌套
-- **代码块**：等宽字体，可选语法高亮（需 Pygments）
-- **引用块**：完整保留，支持行内格式
-- **列表**：无序和有序列表，正确缩进
-- **行内格式**：**粗体**、*斜体*、`代码`、[链接](/) 完整保留
-- **数学公式**：LaTeX 公式渲染为 SVG（需 matplotlib）
-- **Mermaid 图表**：流程图/序列图等渲染为 SVG
-- **目录**：自动生成 Word 目录域
-- **标题编号**：多级标题自动编号
-- **中文适配**：全部显式设置东亚字体，杜绝日文字体回退（MS Mincho 等）
-- **段落换行**：Markdown 中的换行自动转为段落标记（^p），而非手动换行符
-- **错误报告**：转换完成后汇总警告和错误信息
+| 特性 | 依赖 | 可选 |
+|------|------|------|
+| 核心转换 | python-docx, markdown, Pillow | 否 |
+| 代码高亮 | Pygments | 是 |
+| 数学公式 | matplotlib, latex2mathml | 是 |
+| SVG 嵌入 | resvg | 是 |
+| Watch 模式 | watchdog | 是 |
+| YAML 配置 | PyYAML（纯文本回退） | 否（无 PyYAML 时自动降级） |
+
+## 工作原理
+
+```
+Markdown → HTML → 按块分派 → 模板样式提取 → python-docx 构建 → .docx
+                           ↕
+                   脚注/公式/Mermaid/代码高亮
+```
+
+工具的独特之处在于**样式提取机制**：不是用代码定义格式，而是从 Word 模板中读取已存在的段落样式。打开模板 docx → 修改引导段落格式 → 保存 → md2word 自动使用新样式。
 
 ## 项目结构
 
 ```
 src/md2word/
-├── cli.py              — CLI 入口：参数解析、4 套主题模板
-├── converter.py        — 核心转换：MD → HTML → docx，含样式提取
-├── template.py         — 从引导段落提取样式格式 + 模板验证
-├── image_utils.py      — 图片下载、缩放、嵌入
-├── syntax.py           — 代码语法高亮（Pygments）
-├── math_renderer.py    — 数学公式渲染（matplotlib → SVG）
-├── mermaid_renderer.py — Mermaid 图表渲染（API / mmdc）
+├── cli.py              — CLI 入口、参数解析、Watch 模式
+├── converter.py        — 核心转换管道
+├── template.py         — 引导段落样式提取 + 模板验证
+├── config.py           — 配置文件加载（YAML/JSON/TOML）
+├── footnotes.py        — 脚注提取 + Word 原生脚注写入
+├── themes.py           — 4 套内置主题定义 + 模板生成
+├── image_utils.py      — 图片下载、缩放、SVG 处理
+├── syntax.py           — Pygments 语法高亮
+├── math_omml.py        — LaTeX → Word OMML 转换
+├── math_renderer.py    — LaTeX → SVG 渲染（matplotlib 回退）
+├── mermaid_renderer.py — Mermaid → SVG（API / mmdc）
 template/
-├── 官方公文.docx
 ├── 学术论文.docx
+├── 官方公文.docx
 ├── 技术文档.docx
 └── 自媒体排版.docx
 ```
+
+## 技术栈
+
+Python 3.10+, python-docx, lxml, markdown, Pillow, requests, Pygments, matplotlib, latex2mathml, watchdog
+
+## 与 Pandoc 对比
+
+| 能力 | md2word | Pandoc |
+|------|---------|--------|
+| 安装复杂度 | 纯 Python, pip install | Haskell 生态, 较重型 |
+| 模板机制 | Word 改格式即生效 | 需写 LaTeX/自定义 writer |
+| 公式 | OMML 原生可编辑 | 需 --reference-docx |
+| 三线表 | 一键开关 | 需自定义模板 |
+| 中文排版 | 显式东亚字体, 防日文回退 | 依赖模板配置 |
+| Mermaid | 内建 | 需预处理 |
+| Watch 模式 | 内建 | 无 |
+| 脚注 | Markdown 标准语法 | 支持 |
+| 交叉引用 | Word REF 域 | 需 Pandoc 过滤器 |
+| PDF 输出 | 不支持 | 内建 |
+
+md2word 定位是**Markdown → Word 的专用工具**，专注于中文排版和 Word 原生特性，不做通用文档转换。
