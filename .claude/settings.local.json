@@ -72,7 +72,9 @@
       "Bash(grep -c '\\\\$\\\\$' 3.md)",
       "Bash(grep -c '\\\\$' 3.md)",
       "Bash(grep -c '```' 3.md)",
-      "Bash(md2word \"D:\\\\git\\\\lsqkk\\\\lsqkk.github.io\\\\posts\\\\ml\\\\3.md\" -o \"D:\\\\git\\\\lsqkk\\\\lsqkk.github.io\\\\posts\\\\ml\\\\3.docx\" --theme academic --toc --number-headings)"
+      "Bash(md2word \"D:\\\\git\\\\lsqkk\\\\lsqkk.github.io\\\\posts\\\\ml\\\\3.md\" -o \"D:\\\\git\\\\lsqkk\\\\lsqkk.github.io\\\\posts\\\\ml\\\\3.docx\" --theme academic --toc --number-headings)",
+      "Read(//c/Users/hp/Desktop/**)",
+      "Read(//mnt/c/Users/hp/Desktop/**)"
     ]
   }
 }

@@ -53,6 +53,7 @@ from .image_utils import (
     resolve_image,
     resolve_svg_raw,
 )
+from .math_omml import latex_to_omml as _latex_to_omml
 from .math_renderer import extract_and_placeholder, has_math, render_math_svg
 from .mermaid_renderer import render_mermaid
 from .syntax import extract_language, highlight
@@ -77,22 +78,34 @@ def _strip_front_matter(text: str) -> str:
 
 
 def _postprocess_math_html(html: str, math_exprs: list[dict]) -> str:
-    """Render math LaTeX to SVG and replace placeholders with <img> tags."""
+    """Render math LaTeX to OMML (preferred) or SVG, replacing placeholders."""
     import base64
 
     result = html
     for expr in math_exprs:
-        svg_bytes, w_px, h_px = render_math_svg(expr["latex"], expr["kind"])
         latex = expr["latex"]
-        if svg_bytes:
-            b64 = base64.b64encode(svg_bytes).decode("ascii")
+        kind = expr["kind"]
+        alt = f"[{latex[:60]}]"
+
+        # Try OMML first — yields editable native Word formulas
+        omml = _latex_to_omml(latex, kind == "block")
+        if omml:
+            omml_b64 = base64.b64encode(omml.encode("utf-8")).decode("ascii")
             replacement = (
-                f'<img class="math-{expr["kind"]}" src="" '
-                f'data-svg-base64="{b64}" '
-                f'alt="[{latex[:60]}]"/>'
+                f'<img class="math-{kind}" src="" '
+                f'data-omml-base64="{omml_b64}" alt="{alt}"/>'
             )
         else:
-            replacement = f'<span class="math-fallback">[{latex[:80]}]</span>'
+            # Fall back to SVG rendering
+            svg_bytes, w_px, h_px = render_math_svg(latex, kind)
+            if svg_bytes:
+                svg_b64 = base64.b64encode(svg_bytes).decode("ascii")
+                replacement = (
+                    f'<img class="math-{kind}" src="" '
+                    f'data-svg-base64="{svg_b64}" alt="{alt}"/>'
+                )
+            else:
+                replacement = f'<span class="math-fallback">{alt}</span>'
         result = result.replace(expr["placeholder"], replacement)
     return result
 
@@ -201,8 +214,15 @@ def _build_runs(doc: Document, p, elem: ET.Element, base_fmt: ParagraphFormat) -
         elif tag == "img":
             src = child.get("src", "")
             alt = child.get("alt", "")
-            svg_b64 = child.get("data-svg-base64", "")
-            if svg_b64:
+            omml_b64 = child.get("data-omml-base64", "")
+            if omml_b64:
+                import base64
+                omml_data = base64.b64decode(omml_b64).decode("utf-8")
+                if omml_data:
+                    _insert_inline_omml(p, omml_data)
+                else:
+                    _push_run(p, f"[Math: {alt}]", base_fmt, italic=True)
+            elif svg_b64 := child.get("data-svg-base64", ""):
                 import base64
                 svg_data = base64.b64decode(svg_b64)
                 if svg_data:
@@ -413,6 +433,26 @@ def _embed_svg_in_paragraph(
     run._r.append(parse_xml(xml))
 
 
+# ── OMML helpers ──────────────────────────────────────────────────────────
+
+
+def _insert_inline_omml(p, omml_xml: str) -> None:
+    """Insert an inline OMML formula inside a run in *p*."""
+    from docx.oxml import parse_xml
+
+    run = p.add_run()
+    run._r.append(parse_xml(omml_xml))
+
+
+def _insert_block_omml(doc: Document, omml_xml: str) -> None:
+    """Insert a display OMML formula as a centered paragraph."""
+    from docx.oxml import parse_xml
+
+    p = doc.add_paragraph()
+    p.paragraph_format.alignment = 1  # center
+    p._p.append(parse_xml(omml_xml))
+
+
 def _style_table(table) -> None:
     tbl = table._tbl
     tblPr = tbl.tblPr
@@ -441,12 +481,19 @@ def _reset_heading_counters(max_level: int = 6) -> None:
 
 
 def _next_heading_number(level: int) -> str:
-    """Return the heading number (e.g. '1', '1.2', '2.3.1')."""
+    """Return heading number with offset: h2 → ``1``, h3 → ``1.1``, etc.
+
+    ``h1`` (#) is treated as a document title and never numbered.
+    """
     global _HEADING_COUNTERS
-    _HEADING_COUNTERS[level] += 1
-    for i in range(level + 1, len(_HEADING_COUNTERS)):
+    if level <= 1:
+        return ""
+    # Shift: h2 → display level 1, h3 → level 2, etc.
+    dl = level - 1
+    _HEADING_COUNTERS[dl] += 1
+    for i in range(dl + 1, len(_HEADING_COUNTERS)):
         _HEADING_COUNTERS[i] = 0
-    return ".".join(str(_HEADING_COUNTERS[l]) for l in range(1, level + 1))
+    return ".".join(str(_HEADING_COUNTERS[l]) for l in range(1, dl + 1))
 
 
 def _add_page_break(doc: Document) -> None:
@@ -470,7 +517,8 @@ def _handle_heading(
     slot.apply_to_paragraph(p)
     if number_headings:
         num = _next_heading_number(level)
-        _push_run(p, f"{num} ", slot)
+        if num:
+            _push_run(p, f"{num} ", slot)
     _build_runs(doc, p, elem, slot)
     _set_outline_level(p, level)
 
@@ -506,6 +554,19 @@ def _handle_image(doc: Document, elem: ET.Element, styles: dict, image_max_width
     """Image with alt-text caption below. Supports raster and SVG."""
     src = elem.get("src", "")
     alt = elem.get("alt", "")
+
+    # OMML formula (block / display math) — native Word math
+    omml_b64 = elem.get("data-omml-base64", "")
+    if omml_b64:
+        import base64
+        omml_data = base64.b64decode(omml_b64).decode("utf-8")
+        if omml_data:
+            _insert_block_omml(doc, omml_data)
+        else:
+            p = doc.add_paragraph()
+            _push_run(p, f"[Math: {alt}]", ParagraphFormat(), italic=True)
+        return
+
     img_fmt = styles.get("image", ParagraphFormat())
 
     # Detect math formula (generated by _postprocess_math_html)
@@ -881,9 +942,13 @@ def convert(
         p = doc.paragraphs[0]._p
         p.getparent().remove(p)
 
-    # ── Table of Contents ─────────────────────────────────────────────────
-    if toc:
+    # ── Table of Contents (inserted after the first h1 heading) ─────────
+    # If no h1 is found, TOC goes at the beginning (current behaviour).
+    _toc_pending = toc
+    check_blocks = list(blocks)
+    if _toc_pending and not any(b.tag == "h1" for b in check_blocks):
         _add_toc(doc, styles, depth=toc_depth)
+        _toc_pending = False
 
     # Set Word to update fields (e.g. TOC) on open
     from docx.oxml import OxmlElement
@@ -908,6 +973,9 @@ def convert(
                 _handle_heading(doc, block, int(tag[1]), styles,
                                 number_headings=number_headings,
                                 page_break=page_break_h1)
+                if _toc_pending and tag == "h1":
+                    _add_toc(doc, styles, depth=toc_depth)
+                    _toc_pending = False
             elif tag == "p":
                 _handle_paragraph(doc, block, styles, image_max_width=image_max_width)
             elif tag == "img":
