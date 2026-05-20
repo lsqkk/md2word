@@ -203,6 +203,8 @@ def build_theme(spec: ThemeSpec, output_path: Path) -> None:
     s.bottom_margin = Cm(spec.margins_cm[1])
     s.left_margin = Cm(spec.margins_cm[2])
     s.right_margin = Cm(spec.margins_cm[3])
+    # Prevent blank first page from NEW_PAGE section start type
+    s.start_type = 0  # WD_SECTION_START.CONTINUOUS
 
     for ps in spec.paragraphs:
         p = doc.add_paragraph()

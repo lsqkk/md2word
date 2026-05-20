@@ -84,6 +84,39 @@ def _replace_fn_placeholders(html: str) -> str:
 # ── Front matter ───────────────────────────────────────────────────────────────
 
 
+_LIST_MARKER_RE = re.compile(r"^[\-\*\+] ")
+_NUMBERED_MARKER_RE = re.compile(r"^\d+[\.\)] ")
+
+
+def _ensure_list_blank_lines(text: str) -> str:
+    """Insert blank lines before list items when missing.
+
+    Standard Markdown requires a blank line before ``- ``, ``* ``, ``1. ``
+    etc. for them to be parsed as lists.  This pre-processor inserts the
+    missing blank lines so that ``-`` at the start of a line always becomes
+    a list item.
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        is_list = bool(
+            _LIST_MARKER_RE.match(line) or _NUMBERED_MARKER_RE.match(line)
+        )
+        if is_list and i > 0:
+            prev = lines[i - 1].strip()
+            if (
+                prev
+                and not _LIST_MARKER_RE.match(lines[i - 1])
+                and not _NUMBERED_MARKER_RE.match(lines[i - 1])
+                and not prev.startswith("#")
+            ):
+                if result and result[-1] != "":
+                    result.append("")
+        result.append(line)
+    return "\n".join(result)
+
+
 def _strip_front_matter(text: str) -> str:
     """Remove YAML front matter (---…---) from the beginning of markdown."""
     if text.startswith("---"):
@@ -661,6 +694,129 @@ def _style_table(table, three_line: bool = False) -> None:
     tblPr.append(borders)
 
 
+# ── List numbering helpers ────────────────────────────────────────────────
+
+
+def _ensure_list_abstract_nums(doc: Document) -> dict[str, int]:
+    """Create abstractNum definitions for bullet and ordered lists if missing.
+
+    Returns dict ``{"bullet": id, "ordered": id}``.
+    """
+    key = "_md2word_list_abstracts"
+    if hasattr(doc, key):
+        return getattr(doc, key)
+
+    from docx.oxml import parse_xml
+
+    numbering_part = doc.part.numbering_part
+    numbering_xml = numbering_part._element
+
+    # Next available abstractNumId
+    existing_abstract = numbering_xml.findall(qn("w:abstractNum"))
+    ids = [
+        int(a.get(qn("w:abstractNumId")))
+        for a in existing_abstract
+        if a.get(qn("w:abstractNumId")) is not None
+    ]
+    next_id = max(ids) + 1 if ids else 0
+
+    bullet_abstract = (
+        f'<w:abstractNum w:abstractNumId="{next_id}"'
+        f' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'  <w:multiLevelType w:val="hybridMultilevel"/>'
+        f'  <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/>'
+        f'    <w:lvlText w:val="●"/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'  <w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="bullet"/>'
+        f'    <w:lvlText w:val="○"/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'  <w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="bullet"/>'
+        f'    <w:lvlText w:val="▪"/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'  <w:lvl w:ilvl="3"><w:start w:val="1"/><w:numFmt w:val="bullet"/>'
+        f'    <w:lvlText w:val="◆"/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="2880" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'</w:abstractNum>'
+    )
+    numbering_xml.append(parse_xml(bullet_abstract))
+    bullet_id = next_id
+    next_id += 1
+
+    ordered_abstract = (
+        f'<w:abstractNum w:abstractNumId="{next_id}"'
+        f' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'  <w:multiLevelType w:val="hybridMultilevel"/>'
+        f'  <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+        f'    <w:lvlText w:val="%1."/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'  <w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/>'
+        f'    <w:lvlText w:val="%2."/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'  <w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="lowerRoman"/>'
+        f'    <w:lvlText w:val="%3."/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'  <w:lvl w:ilvl="3"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+        f'    <w:lvlText w:val="%4."/><w:lvlJc w:val="left"/>'
+        f'    <w:pPr><w:ind w:left="2880" w:hanging="360"/></w:pPr>'
+        f'  </w:lvl>'
+        f'</w:abstractNum>'
+    )
+    numbering_xml.append(parse_xml(ordered_abstract))
+    ordered_id = next_id
+
+    result = {"bullet": bullet_id, "ordered": ordered_id}
+    setattr(doc, key, result)
+    return result
+
+
+def _create_list_num_id(doc: Document, list_type: str = "bullet") -> int:
+    """Create a new ``<w:num>`` instance and return its numId."""
+    from docx.oxml import parse_xml
+
+    abstracts = _ensure_list_abstract_nums(doc)
+    abstract_id = abstracts[list_type]
+
+    numbering_xml = doc.part.numbering_part._element
+    existing_nums = numbering_xml.findall(qn("w:num"))
+    num_ids = [
+        int(n.get(qn("w:numId")))
+        for n in existing_nums
+        if n.get(qn("w:numId")) is not None
+    ]
+    next_num_id = max(num_ids) + 1 if num_ids else 1
+
+    num_xml = (
+        f'<w:num xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        f' w:numId="{next_num_id}">'
+        f'  <w:abstractNumId w:val="{abstract_id}"/>'
+        f'</w:num>'
+    )
+    numbering_xml.append(parse_xml(num_xml))
+    return next_num_id
+
+
+def _add_num_pr(p, num_id: int, ilvl: int = 0) -> None:
+    """Add ``<w:numPr>`` to a paragraph, replacing any existing one."""
+    pPr = p._p.get_or_add_pPr()
+    for existing in pPr.findall(qn("w:numPr")):
+        pPr.remove(existing)
+    numPr = OxmlElement("w:numPr")
+    ilvl_el = OxmlElement("w:ilvl")
+    ilvl_el.set(qn("w:val"), str(ilvl))
+    num_id_el = OxmlElement("w:numId")
+    num_id_el.set(qn("w:val"), str(num_id))
+    numPr.append(ilvl_el)
+    numPr.append(num_id_el)
+    pPr.insert(0, numPr)
+
+
 # ── block handlers ──────────────────────────────────────────────────────────
 
 
@@ -919,55 +1075,51 @@ def _tokens_for_line(tokens: list, line_text: str) -> list:
 
 
 def _handle_unordered_list(
-    doc: Document, elem: ET.Element, styles: dict, depth: int = 0
+    doc: Document, elem: ET.Element, styles: dict, depth: int = 0,
+    num_id: int | None = None,
 ) -> None:
-    """Unordered list with bullet prefix. Supports nesting."""
+    """Unordered list with Word native bullet numbering. Supports nesting."""
     fmt = styles.get("bullet_list", styles.get("body", ParagraphFormat()))
-    bullets = ["• ", "◦ ", "▪ ", "▸ "]
+    if num_id is None:
+        num_id = _create_list_num_id(doc, "bullet")
     for li in elem:
         if li.tag != "li":
             continue
-        # Process nested lists inside this <li>
         nested = li.findall("ul") + li.findall("ol")
-        # Build runs from <li> content, excluding nested list children
         p = doc.add_paragraph()
         fmt.apply_to_paragraph(p)
-        if fmt.left_indent_emu is None:
-            p.paragraph_format.left_indent = Inches(0.35 * (depth + 1))
-        bullet = p.add_run(bullets[min(depth, len(bullets) - 1)])
-        fmt.apply_to_run(bullet)
+        _add_num_pr(p, num_id, ilvl=depth)
         _build_runs_skip(doc, p, li, fmt, skip_tags={"ul", "ol"})
         if nested:
             for nest in nested:
                 if nest.tag == "ul":
-                    _handle_unordered_list(doc, nest, styles, depth + 1)
+                    _handle_unordered_list(doc, nest, styles, depth + 1, num_id)
                 else:
                     _handle_ordered_list(doc, nest, styles, depth + 1)
 
 
 def _handle_ordered_list(
-    doc: Document, elem: ET.Element, styles: dict, depth: int = 0
+    doc: Document, elem: ET.Element, styles: dict, depth: int = 0,
+    num_id: int | None = None,
 ) -> None:
-    """Ordered list with number prefix. Supports nesting."""
+    """Ordered list with Word native decimal numbering. Supports nesting."""
     fmt = styles.get("number_list", styles.get("body", ParagraphFormat()))
-    idx = 1
+    if num_id is None:
+        num_id = _create_list_num_id(doc, "ordered")
     for child in elem:
         if child.tag != "li":
             continue
         nested = child.findall("ul") + child.findall("ol")
         p = doc.add_paragraph()
         fmt.apply_to_paragraph(p)
-        if fmt.left_indent_emu is None:
-            p.paragraph_format.left_indent = Inches(0.35 * (depth + 1))
-        _push_run(p, f"{idx}. ", fmt)
+        _add_num_pr(p, num_id, ilvl=depth)
         _build_runs_skip(doc, p, child, fmt, skip_tags={"ul", "ol"})
-        idx += 1
         if nested:
             for nest in nested:
                 if nest.tag == "ul":
                     _handle_unordered_list(doc, nest, styles, depth + 1)
                 else:
-                    _handle_ordered_list(doc, nest, styles, depth + 1)
+                    _handle_ordered_list(doc, nest, styles, depth + 1, num_id)
 
 
 def _build_runs_skip(doc, p, elem, base_fmt, skip_tags=None):
@@ -1088,6 +1240,42 @@ def _remove_guide_paragraphs(doc: Document) -> None:
         p_elem.getparent().remove(p_elem)
 
 
+# ── OOXML metadata fix ──────────────────────────────────────────────────
+
+
+def _fix_ooxml_metadata(output_path: str | Path) -> None:
+    """Fix OOXML metadata so Windows shows the proper Word icon.
+
+    python-docx writes ``Microsoft Macintosh Word`` as the application name,
+    which can cause Windows to fall back to a generic white icon.
+    """
+    import io
+    import zipfile
+
+    path = Path(output_path)
+    buf = path.read_bytes()
+    out_buf = io.BytesIO()
+    rewritten = False
+
+    with zipfile.ZipFile(io.BytesIO(buf)) as zin:
+        with zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                raw = zin.read(item.filename)
+                if item.filename == "docProps/app.xml":
+                    text = raw.decode("utf-8")
+                    fixed = text.replace(
+                        "<Application>Microsoft Macintosh Word</Application>",
+                        "<Application>Microsoft Office Word</Application>",
+                    )
+                    if fixed != text:
+                        rewritten = True
+                    raw = fixed.encode("utf-8")
+                zout.writestr(item, raw)
+
+    if rewritten:
+        path.write_bytes(out_buf.getvalue())
+
+
 # ── main ────────────────────────────────────────────────────────────────────
 
 
@@ -1139,6 +1327,9 @@ def convert(
     else:
         math_exprs = []
 
+    # ── Ensure list items have preceding blank lines ───────────────────
+    markdown_text = _ensure_list_blank_lines(markdown_text)
+
     html = markdown.markdown(
         markdown_text,
         extensions=[
@@ -1162,6 +1353,10 @@ def convert(
     blocks = _html_to_blocks(html)
 
     doc = Document(str(template_path))
+
+    # Ensure first section doesn't force a new page (prevents blank first page)
+    if doc.sections:
+        doc.sections[0].start_type = 0  # WD_SECTION_START.CONTINUOUS
 
     # Remove guide paragraphs AND empty paragraph at top
     _remove_guide_paragraphs(doc)
@@ -1246,4 +1441,8 @@ def convert(
             report.warn(f"Failed to process <{tag}> block: {e}")
 
     doc.save(str(output_path))
+
+    # ── Fix OOXML metadata for proper Windows icon/thumbnail ────────────
+    _fix_ooxml_metadata(output_path)
+
     print(f"  {report.summary()}")
