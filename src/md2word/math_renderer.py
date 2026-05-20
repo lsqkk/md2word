@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
-import os
 import re
 import tempfile
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 
 _INLINE_PATTERN = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)")
@@ -101,16 +98,14 @@ def render_math_svg(latex: str, kind: str = "inline") -> tuple[bytes | None, int
         plt.close(fig)
         svg_str = buf.getvalue().decode("utf-8")
 
-        # Parse SVG dimensions from viewBox or width/height
-        root = ET.fromstring(svg_str)
-        view_box = root.get("viewBox", "")
-        if view_box:
-            parts = view_box.split()
-            w_pt = float(parts[2])
-            h_pt = float(parts[3])
+        # Parse SVG dimensions using shared utility
+        from .image_utils import parse_svg_size as _parse_svg_size
+
+        size = _parse_svg_size(svg_str.encode("utf-8"))
+        if size:
+            w_pt, h_pt = size
         else:
-            w_pt = float(root.get("width", "100").rstrip("pt"))
-            h_pt = float(root.get("height", "30").rstrip("pt"))
+            w_pt, h_pt = 100.0, 30.0
 
         # Convert pt → px at given DPI  (1 pt = 1/72 inch)
         scale = dpi / 72.0

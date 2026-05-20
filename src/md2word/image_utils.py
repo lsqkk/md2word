@@ -47,6 +47,50 @@ def resolve_svg_raw(source: str) -> bytes | None:
     return path.read_bytes()
 
 
+def parse_svg_size(svg_bytes: bytes) -> tuple[float, float] | None:
+    """Parse SVG viewBox or width/height attributes.
+
+    Handles comma-separated viewBox values (``"0,0,100,200"``) and strips
+    trailing CSS units (pt, px, cm, mm, in).
+
+    Returns (width, height) in pt-like units (raw viewBox values).
+    Callers multiply by ``dpi / 72.0`` for pixel dimensions.
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(svg_bytes)
+    except Exception:
+        return None
+
+    vb = root.get("viewBox", "")
+    if vb:
+        parts = vb.replace(",", " ").split()
+        if len(parts) == 4:
+            w = float(parts[2])
+            h = float(parts[3])
+            if w > 0 and h > 0:
+                return w, h
+
+    w_str = root.get("width", "")
+    h_str = root.get("height", "")
+    if w_str and h_str:
+        try:
+            w = float(_strip_svg_unit(w_str))
+            h = float(_strip_svg_unit(h_str))
+            if w > 0 and h > 0:
+                return w, h
+        except ValueError:
+            pass
+
+    return None
+
+
+def _strip_svg_unit(s: str) -> str:
+    """Remove trailing CSS unit from an SVG dimension string."""
+    return re.sub(r"(?i)(pt|px|cm|mm|in|pc|em|ex|%)$", "", s.strip())
+
+
 def get_svg_size(
     svg_bytes: bytes, dpi: float = 96
 ) -> tuple[int, int] | None:
@@ -76,34 +120,10 @@ def get_svg_size(
 
 def _get_svg_size_fallback(svg_bytes: bytes, dpi: float = 96) -> tuple[int, int] | None:
     """Parse SVG dimensions from XML attributes (no resvg required)."""
-    import xml.etree.ElementTree as ET
-
-    try:
-        root = ET.fromstring(svg_bytes)
-    except Exception as e:
-        print(f"  [WARN] Failed to parse SVG XML: {e}")
+    size = parse_svg_size(svg_bytes)
+    if size is None:
         return None
-
-    # Try viewBox first
-    vb = root.get("viewBox", "")
-    if vb:
-        parts = vb.split()
-        if len(parts) == 4:
-            w_pt = float(parts[2])
-            h_pt = float(parts[3])
-        else:
-            return None
-    else:
-        # Fall back to width/height attributes (strip units)
-        w_str = root.get("width", "0")
-        h_str = root.get("height", "0")
-        w_pt = float(w_str.rstrip("pt").rstrip("px"))
-        h_pt = float(h_str.rstrip("pt").rstrip("px"))
-
-    if w_pt <= 0 or h_pt <= 0:
-        return None
-
-    # 1 pt = 1/72 inch, dpi pixels per inch
+    w_pt, h_pt = size
     scale = dpi / 72.0
     return (max(1, int(w_pt * scale)), max(1, int(h_pt * scale)))
 

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -88,18 +86,9 @@ def render_mermaid(diagram: str, prefer_mmdc: bool = False) -> MermaidResult | N
 
 def _parse_svg_dimensions(svg_bytes: bytes) -> tuple[int, int]:
     """Extract width and height from SVG bytes."""
-    from xml.etree import ElementTree as ET
+    from .image_utils import parse_svg_size as _parse_svg
 
-    try:
-        root = ET.fromstring(svg_bytes)
-        view_box = root.get("viewBox", "")
-        if view_box:
-            parts = view_box.split()
-            if len(parts) == 4:
-                return int(float(parts[2])), int(float(parts[3]))
-
-        w = int(float(root.get("width", "400")))
-        h = int(float(root.get("height", "300")))
-        return w, h
-    except Exception:
-        return 400, 300
+    size = _parse_svg(svg_bytes)
+    if size:
+        return int(size[0]), int(size[1])
+    return 400, 300

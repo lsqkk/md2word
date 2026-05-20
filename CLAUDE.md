@@ -8,13 +8,17 @@
 ## Structure
 ```
 src/md2word/
-├── cli.py              — CLI: arg parsing, 4 theme templates
-├── converter.py        — Core: MD → HTML → docx with template-derived styles
-├── template.py         — Style extraction, validation, guide paragraph matching
-├── image_utils.py      — Image download (URL/local), resize, embed
-├── syntax.py           — Code syntax highlighting via Pygments
-├── math_renderer.py    — LaTeX → SVG rendering via matplotlib
-├── mermaid_renderer.py — Mermaid → SVG via API or mmdc CLI
+├── __init__.py          — Version info
+├── cli.py               — CLI: arg parsing, orchestration
+├── converter.py         — Core: MD → HTML → docx with template-derived styles
+├── template.py          — Style extraction, validation, guide paragraph matching
+├── themes.py            — Theme data specs & template builder (4 themes)
+├── image_utils.py       — Image download (URL/local), resize, SVG dimension parsing
+├── syntax.py            — Code syntax highlighting via Pygments
+├── math_omml.py         — LaTeX → Word OMML (native editable formulas)
+├── math_renderer.py     — LaTeX → SVG rendering via matplotlib (fallback)
+├── mermaid_renderer.py  — Mermaid → SVG via API or mmdc CLI
+├── py.typed             — PEP 561 marker
 template/
 ├── 官方公文.docx
 ├── 学术论文.docx
@@ -42,7 +46,7 @@ md2word input.md --no-highlight --no-math --no-mermaid                    # disa
 | Extra | Package | Feature |
 |-------|---------|---------|
 | highlight | pygments | Code syntax highlighting |
-| math | matplotlib | LaTeX formula rendering |
+| math | matplotlib, latex2mathml | LaTeX formula rendering (OMML + SVG fallback) |
 | svg | resvg | Native SVG embedding in docx |
 
 ## Themes

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -862,8 +861,6 @@ def _handle_horizontal_rule(doc: Document, styles: dict) -> None:
 
 def _remove_guide_paragraphs(doc: Document) -> None:
     """Remove all guide paragraphs (style markers) from a template."""
-    from .template import _STYLE_KEYWORDS
-
     to_remove = []
     for p in doc.paragraphs:
         text = p.text.strip().lower()
