@@ -300,6 +300,10 @@ def main(argv: list[str] | None = None) -> int:
     elif "toc" in cfg:
         use_toc = bool(cfg["toc"])
 
+    # 红头文件默认无目录，除非用户在配置或 CLI 中显式设置
+    if raw_args.redhead and "toc" not in cfg and raw_args.toc is None and raw_args.no_toc is None:
+        use_toc = False
+
     # ── Resolve project dir ────────────────────────────────────────────────
     project_dir = None
     if raw_args.project_dir:

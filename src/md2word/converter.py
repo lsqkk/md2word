@@ -1316,22 +1316,32 @@ def _remove_guide_paragraphs(doc: Document) -> None:
 
 
 def _fix_ooxml_metadata(output_path: str | Path) -> None:
-    """Fix OOXML metadata so Windows shows the proper Word icon.
+    """Post-process docx ZIP to fix thumbnail + application name.
 
-    python-docx writes ``Microsoft Macintosh Word`` as the application name,
-    which can cause Windows to fall back to a generic white icon.
+    python-docx embeds a blank ``docProps/thumbnail.jpeg`` that makes
+    Windows show a white box instead of a content preview.  We strip
+    it so Windows generates a preview from the actual document content.
+
+    Also fixes the Application name from "Microsoft Macintosh Word"
+    to "Microsoft Office Word".
     """
     import io
+    import re
     import zipfile
 
     path = Path(output_path)
     buf = path.read_bytes()
     out_buf = io.BytesIO()
-    rewritten = False
+    changed = False
 
     with zipfile.ZipFile(io.BytesIO(buf)) as zin:
         with zipfile.ZipFile(out_buf, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
+                # Strip blank thumbnail — Windows will preview real content
+                if "thumbnail" in item.filename:
+                    changed = True
+                    continue
+
                 raw = zin.read(item.filename)
                 if item.filename == "docProps/app.xml":
                     text = raw.decode("utf-8")
@@ -1340,11 +1350,21 @@ def _fix_ooxml_metadata(output_path: str | Path) -> None:
                         "<Application>Microsoft Office Word</Application>",
                     )
                     if fixed != text:
-                        rewritten = True
+                        changed = True
                     raw = fixed.encode("utf-8")
+                elif item.filename == "_rels/.rels":
+                    # Remove the thumbnail relationship so OPC stays valid
+                    without_thumb = re.sub(
+                        r'<Relationship[^>]*thumbnail[^>]*/>',
+                        '',
+                        raw.decode("utf-8"),
+                    )
+                    if without_thumb != raw.decode("utf-8"):
+                        changed = True
+                    raw = without_thumb.encode("utf-8")
                 zout.writestr(item, raw)
 
-    if rewritten:
+    if changed:
         path.write_bytes(out_buf.getvalue())
 
 

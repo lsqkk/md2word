@@ -93,5 +93,18 @@ Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.
 - `ConversionReport` dataclass — structured error/warning/info tracking
 - `.md2word/` directory support in config search
 
+## Known issues & fixes
+
+### White thumbnail (blank preview) in Windows File Explorer
+
+**Root cause**: python-docx embeds a built-in `docProps/thumbnail.jpeg` that is a blank/white image. When Windows finds a thumbnail inside the docx, it displays it instead of generating a preview from the document content.
+
+**Fix applied in `_fix_ooxml_metadata()`** (converter.py):
+1. Strip `docProps/thumbnail.jpeg` from the ZIP during post-processing
+2. Remove the corresponding `<Relationship>` entry from `_rels/.rels` so the OPC stays valid
+3. Also fix the Application name from "Microsoft Macintosh Word" to "Microsoft Office Word"
+
+**If the white thumbnail reappears** — suspect that `_fix_ooxml_metadata()` is not being called (check the `convert()` function's epilogue), or that python-docx changed the default thumbnail relationship path. Verify by extracting ZIP entries and checking for `thumbnail` in filenames.
+
 ## Tool Doc Sync
 The global tool doc at `~/.claude/tools/md2word-tool.md` and the project copy `MD2WORD-TOOL.md` must be kept in sync. When adding CLI features, update both files.
