@@ -2,9 +2,69 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+
+# ── GB Standards reference ─────────────────────────────────────────────────
+
+
+_GB_STANDARDS: dict[str, dict] = {
+    "9704_2012": {
+        # GB/T 9704-2012 党政机关公文格式
+        "margins_cm": (3.7, 3.5, 2.8, 2.6),  # 上 37mm, 下 35mm, 左 28mm, 右 26mm
+        "body_font": "FangSong",
+        "body_size_pt": 16,  # 三号
+        "heading1_font": "SimHei",
+        "heading1_size_pt": 22,  # 二号
+        "line_spacing": 1.5,  # 一倍半行距
+    },
+    "7713_2015": {
+        # GB/T 7713-2015 学术论文格式
+        "margins_cm": (2.54, 2.54, 3.17, 3.17),
+        "body_font": "SimSun",
+        "body_size_pt": 12,  # 小四号
+        "heading1_font": "SimHei",
+        "heading1_size_pt": 16,  # 三号
+        "heading_align": 1,  # 居中
+        "line_spacing": 1.5,
+    },
+}
+
+_GB_CHECKLIST: dict[str, list[str]] = {
+    "margins": [
+        ('GB/T 9704-2012 公文上边距应为 37mm，当前 %.1fmm', _GB_STANDARDS["9704_2012"]["margins_cm"][0]),
+        ('GB/T 9704-2012 公文下边距应为 35mm，当前 %.1fmm', _GB_STANDARDS["9704_2012"]["margins_cm"][1]),
+        ('GB/T 9704-2012 公文左边距应为 28mm，当前 %.1fmm', _GB_STANDARDS["9704_2012"]["margins_cm"][2]),
+        ('GB/T 9704-2012 公文右边距应为 26mm，当前 %.1fmm', _GB_STANDARDS["9704_2012"]["margins_cm"][3]),
+    ],
+}
+
+
+# ── Incremental cache ──────────────────────────────────────────────────────
+
+
+def _file_hash(path: str | Path) -> str:
+    """Return MD5 hex digest of file content."""
+    h = hashlib.md5()
+    h.update(Path(path).read_bytes())
+    return h.hexdigest()
+
+
+def _load_cache(cache_path: str | Path) -> dict:
+    """Load incremental conversion cache."""
+    try:
+        return json.loads(Path(cache_path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_cache(cache_path: str | Path, cache: dict) -> None:
+    """Save incremental conversion cache."""
+    Path(cache_path).write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ── Conversion report ───────────────────────────────────────────────────────
@@ -12,31 +72,43 @@ from xml.etree import ElementTree as ET
 
 @dataclass
 class ConversionReport:
-    """Tracks warnings and errors during conversion."""
+    """Tracks warnings and errors during conversion.
+
+    Provides structured output that can be queried programmatically.
+    """
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     info: list[str] = field(default_factory=list)
 
     def warn(self, msg: str) -> None:
         self.warnings.append(msg)
-        print(f"  [WARN] {msg}")
+        print(f"  ⚠  {msg}")
 
     def error(self, msg: str) -> None:
         self.errors.append(msg)
-        print(f"  [ERR]  {msg}")
+        print(f"  ✖  {msg}")
 
     def info_msg(self, msg: str) -> None:
         self.info.append(msg)
 
     def summary(self) -> str:
-        parts = []
-        if not self.warnings and not self.errors:
-            return "[OK] Conversion complete -- no warnings or errors."
-        if self.errors:
-            parts.append(f"[ERR] {len(self.errors)} error(s)")
+        """Return a structured human-readable summary."""
+        lines = []
+        if self.info:
+            for msg in self.info:
+                lines.append(f"  ℹ  {msg}")
         if self.warnings:
-            parts.append(f"[WARN] {len(self.warnings)} warning(s)")
-        return f"Conversion complete -- {', '.join(parts)}."
+            lines.append(f"  ⚠  {len(self.warnings)} 个警告")
+        if self.errors:
+            lines.append(f"  ✖  {len(self.errors)} 个错误")
+        if not self.errors and not self.warnings:
+            lines.append("  ✅ 转换完成，无警告或错误")
+        else:
+            lines.append("  📋 请查看以上详细信息")
+        return "\n".join(lines)
+
+    def has_errors(self) -> bool:
+        return len(self.errors) > 0
 
 import markdown
 from docx import Document
@@ -1276,6 +1348,157 @@ def _fix_ooxml_metadata(output_path: str | Path) -> None:
         path.write_bytes(out_buf.getvalue())
 
 
+# ── GB compliance check ──────────────────────────────────────────────────
+
+
+def _check_gb_compliance(doc, styles: dict, report: ConversionReport) -> None:
+    """Check document formatting against Chinese GB standards, emit warnings."""
+    if not doc.sections:
+        return
+    s = doc.sections[0]
+    from docx.shared import Cm, Mm
+
+    top = s.top_margin / 914400 * 25.4  # EMU → mm
+    bottom = s.bottom_margin / 914400 * 25.4
+    left = s.left_margin / 914400 * 25.4
+    right = s.right_margin / 914400 * 25.4
+
+    # Check against GB/T 9704-2012 (公文)
+    gb = _GB_STANDARDS["9704_2012"]
+    gb_t, gb_b, gb_l, gb_r = [v * 10 for v in gb["margins_cm"]]  # cm → mm
+    checks = [
+        (top, gb_t, 2.0, f"上边距 ({top:.0f}mm) 偏离 GB/T 9704-2012 标准 ({gb_t:.0f}mm)"),
+        (bottom, gb_b, 2.0, f"下边距 ({bottom:.0f}mm) 偏离 GB/T 9704-2012 标准 ({gb_b:.0f}mm)"),
+        (left, gb_l, 2.0, f"左边距 ({left:.0f}mm) 偏离 GB/T 9704-2012 标准 ({gb_l:.0f}mm)"),
+        (right, gb_r, 2.0, f"右边距 ({right:.0f}mm) 偏离 GB/T 9704-2012 标准 ({gb_r:.0f}mm)"),
+    ]
+    for actual, expected, tol, msg in checks:
+        if abs(actual - expected) > tol:
+            report.info_msg(f"[GB] 非公文模板: {msg}")
+
+    # Check body font
+    body_fmt = styles.get("body")
+    if body_fmt and body_fmt.font_name:
+        if body_fmt.font_name not in ("FangSong", "SimSun", "SimHei"):
+            report.info_msg(f"[GB] 正文字体 '{body_fmt.font_name}' — 非标准公文/学术字体（推荐仿宋/宋体）")
+
+
+# ── Red-head document header ────────────────────────────────────────────
+
+
+def _insert_redhead_header(doc, authority_name: str, styles: dict) -> None:
+    """Insert 红头文件 header elements at the document start.
+
+    Structure:
+        1. Red authority name (centered, large, bold, red)
+        2. Full-width red separator line
+        3. Optional document number line (empty, user fills in Word)
+    """
+    from docx.shared import Pt, RGBColor, Cm
+
+    # ── Red header: authority name ────────────────────────────────────
+    p_red = doc.add_paragraph()
+    p_red.paragraph_format.alignment = 1  # center
+    p_red.paragraph_format.space_after = Pt(4)
+    run = p_red.add_run(authority_name)
+    run.font.name = "SimHei"
+    run.font.size = Pt(28)  # 一号
+    run.font.bold = True
+    from .template import set_run_font
+    set_run_font(run, "SimHei", "SimHei")
+    run.font.color.rgb = RGBColor(0xCC, 0x00, 0x00)  # 标准红
+
+    # Add "文件" suffix on next line
+    p_suffix = doc.add_paragraph()
+    p_suffix.paragraph_format.alignment = 1
+    p_suffix.paragraph_format.space_after = Pt(6)
+    run2 = p_suffix.add_run("文件")
+    run2.font.name = "SimHei"
+    run2.font.size = Pt(28)
+    run2.font.bold = True
+    set_run_font(run2, "SimHei", "SimHei")
+    run2.font.color.rgb = RGBColor(0xCC, 0x00, 0x00)
+
+    # ── Red separator line ────────────────────────────────────────────
+    p_line = doc.add_paragraph()
+    p_line.paragraph_format.space_before = Pt(2)
+    p_line.paragraph_format.space_after = Pt(12)
+    _add_bottom_border(p_line, color="CC0000", sz="16")
+
+    # ── Document number placeholder ───────────────────────────────────
+    p_num = doc.add_paragraph()
+    p_num.paragraph_format.alignment = 1
+    p_num.paragraph_format.space_after = Pt(12)
+    run3 = p_num.add_run("〔2024〕 号")
+    run3.font.name = "FangSong"
+    run3.font.size = Pt(16)
+    set_run_font(run3, "FangSong", "FangSong")
+
+
+# ── Page number formatting ─────────────────────────────────────────────
+
+
+def _set_page_number_format(doc, fmt: str = "-- %d --") -> None:
+    """Set page number in document footer.
+
+    *fmt* uses ``%d`` as placeholder for the page number.
+    Example: ``-- %d --`` → ``-- 1 --``
+    """
+    if not doc.sections:
+        return
+
+    section = doc.sections[0]
+    footer = section.footer
+    footer.is_linked_to_previous = False
+    p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    p.paragraph_format.alignment = 1  # center
+
+    # Split format around %d
+    parts = fmt.split("%d", 1)
+    prefix = parts[0]
+    suffix = parts[1] if len(parts) > 1 else ""
+
+    if prefix:
+        run_pre = p.add_run(prefix)
+        run_pre.font.size = Pt(10)
+
+    # PAGE field
+    run_field = OxmlElement("w:r")
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    run_field.append(fld_begin)
+    p._p.append(run_field)
+
+    run_instr = OxmlElement("w:r")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = " PAGE "
+    run_instr.append(instr)
+    p._p.append(run_instr)
+
+    run_sep = OxmlElement("w:r")
+    fld_sep = OxmlElement("w:fldChar")
+    fld_sep.set(qn("w:fldCharType"), "separate")
+    run_sep.append(fld_sep)
+    p._p.append(run_sep)
+
+    run_disp = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "1"
+    run_disp.append(t)
+    p._p.append(run_disp)
+
+    run_end = OxmlElement("w:r")
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    run_end.append(fld_end)
+    p._p.append(run_end)
+
+    if suffix:
+        run_suf = p.add_run(suffix)
+        run_suf.font.size = Pt(10)
+
+
 # ── main ────────────────────────────────────────────────────────────────────
 
 
@@ -1295,6 +1518,9 @@ def convert(
     three_line_table: bool = False,
     footnotes_enabled: bool = True,
     formula_numbering: bool = False,
+    redhead_authority: str | None = None,
+    page_number_fmt: str | None = None,
+    gb_check: bool = False,
 ) -> None:
     """Convert *markdown_text* to a Word document.
 
@@ -1308,6 +1534,9 @@ def convert(
         three_line_table: Use academic three-line table style.
         footnotes_enabled: Process footnote syntax [^id].
         formula_numbering: Add SEQ equation numbers to block math.
+        redhead_authority: Issuing authority name for red-head document.
+        page_number_fmt: Page number format, e.g. "-- %d --".
+        gb_check: Check formatting against GB standards.
     """
     styles = extract_template_styles(template_path)
     report = ConversionReport()
@@ -1363,6 +1592,18 @@ def convert(
     if doc.paragraphs and not doc.paragraphs[0].text.strip():
         p = doc.paragraphs[0]._p
         p.getparent().remove(p)
+
+    # ── Red-head header (insert at very beginning) ──────────────────────
+    if redhead_authority:
+        _insert_redhead_header(doc, redhead_authority, styles)
+
+    # ── Page number format ─────────────────────────────────────────────
+    if page_number_fmt:
+        _set_page_number_format(doc, page_number_fmt)
+
+    # ── GB standards compliance check ──────────────────────────────────
+    if gb_check:
+        _check_gb_compliance(doc, styles, report)
 
     # ── Table of Contents (inserted after the first h1 heading) ─────────
     _toc_pending = toc
@@ -1445,4 +1686,6 @@ def convert(
     # ── Fix OOXML metadata for proper Windows icon/thumbnail ────────────
     _fix_ooxml_metadata(output_path)
 
+    report.info_msg("输出文件: " + str(output_path))
     print(f"  {report.summary()}")
+    return report

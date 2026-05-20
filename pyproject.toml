@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "md2word"
-version = "1.2.0"
+version = "1.3.0"
 description = "Convert Markdown to Word (.docx) — templates, footnotes, cross-refs, math, mermaid"
 requires-python = ">=3.10"
 dependencies = [
@@ -26,3 +26,17 @@ md2word = "md2word.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["md2word"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 0
+show_missing = true
+skip_empty = true

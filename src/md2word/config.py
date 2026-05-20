@@ -49,10 +49,23 @@ def _parse_yaml_line(line: str) -> tuple[str, Any] | None:
 def find_config(start: Path | None = None) -> Path | None:
     """Walk up from *start* (default CWD) looking for a config file.
 
-    Priority: ``md2word.yaml`` > ``md2word.yml`` > ``md2word.json``.
+    Priority:
+    1. ``.md2word/config.yaml`` (project directory)
+    2. ``md2word.yaml`` > ``md2word.yml`` > ``md2word.json``
+    3. ``[tool.md2word]`` in ``pyproject.toml``
+
+    Also returns ``_project_dir`` in the result for template resolution.
     """
     root = start or Path.cwd()
     for parent in [root] + list(root.parents):
+        # Check .md2word/ directory first (project-level config)
+        md2word_dir = parent / ".md2word"
+        if md2word_dir.is_dir():
+            for name in ("config.yaml", "config.yml", "config.json"):
+                candidate = md2word_dir / name
+                if candidate.is_file():
+                    return candidate
+        # Then check flat files
         for name in ("md2word.yaml", "md2word.yml", "md2word.json"):
             candidate = parent / name
             if candidate.is_file():
@@ -149,6 +162,12 @@ def load_config(start: Path | None = None) -> dict[str, Any]:
     except Exception as exc:
         print(f"  [WARN] Failed to load config {path}: {exc}", file=sys.stderr)
         return {}
+
+    # Set project dir hint if config is from .md2word/ directory
+    if path.parent.name == ".md2word":
+        cfg["_project_dir"] = str(path.parent.parent.resolve())
+    elif path.name == "pyproject.toml":
+        cfg["_project_dir"] = str(path.parent.resolve())
 
     # Normalise boolean/int fields that might come as strings from the
     # minimal YAML parser.

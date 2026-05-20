@@ -27,6 +27,18 @@ md2word input.md --toc --toc-depth 1-3 --number-headings --page-break
 # 学术排版
 md2word input.md --theme academic --number-headings --three-line-table
 
+# 红头文件
+md2word 通知.md --redhead "XX市人民政府" --theme redhead
+
+# GB标准合规检查
+md2word input.md --theme official --gb-check
+
+# 页码格式
+md2word input.md --page-number "-- %d --"
+
+# 增量转换（跳过未变更文件）
+md2word file1.md file2.md --incremental
+
 # 模板操作
 md2word --create-template my-template.docx --theme academic
 md2word --validate-template my-template.docx
@@ -35,6 +47,9 @@ md2word --list-styles -t template.docx
 # 配置与检查
 md2word --check-deps
 md2word --config md2word.yaml input.md
+
+# 项目级配置
+md2word input.md --project-dir /path/to/project
 ```
 
 ## 主题
@@ -43,8 +58,10 @@ md2word --config md2word.yaml input.md
 |------|--------|------|
 | `official` | 官方公文.docx | 仿宋+黑体，GB标准页边距 |
 | `academic` | 学术论文.docx | 宋体系列，首行缩进，学术排版 |
+| `academic-plus` | 学术论文（增强版） | 增加摘要/关键词/参考文献引导段落 |
 | `tech` | 技术文档.docx | 微软雅黑+深蓝标题，紧凑 |
 | `media` | 自媒体排版.docx | 大标题+橙色+高行距 |
+| `redhead` | 红头文件.docx | GB/T 9704-2012 标准，红头样式 |
 
 ## 引导段落模板系统
 
@@ -65,7 +82,7 @@ md2word --config md2word.yaml input.md
 
 ## 配置文件 (`md2word.yaml`)
 
-支持 `md2word.yaml`、`md2word.yml`、`md2word.json`、`pyproject.toml ([tool.md2word])`：
+支持 `md2word.yaml`、`md2word.yml`、`md2word.json`、`pyproject.toml ([tool.md2word])`，以及项目级 `.md2word/config.yaml`：
 
 ```yaml
 template: template/技术文档.docx
@@ -77,14 +94,15 @@ page-break: true
 three-line-table: true
 ```
 
-## 新功能 (v1.2.0)
+## 新功能 (v1.3.0)
 
-- **配置文件** — 自动读取 md2word.yaml，CLI 参数优先
-- **Watch 模式** (`--watch`) — 监听 .md 文件变化自动转换
-- **脚注** — `[^1]` 语法 → Word 原生脚注
-- **三线表** (`--three-line-table`) — 学术表格式
-- **交叉引用** — `[文字](#标题名)` → Word REF 域
-- **页眉页脚** — 自动保留模板中的页眉页脚
-- **公式编号** — 块级公式自动 SEQ 编号
-- **依赖检查** — `--check-deps` 查看功能完整性
-- **更好的错误提示** — 模板缺失、文件未找到等友好提示
+- **红头文件** (`--redhead`) — 一键生成红头文件，含红色发文机关名称 + 分隔线 + 文号
+- **GB 合规检查** (`--gb-check`) — 自动检测格式是否符合 GB/T 9704-2012 标准
+- **页码格式** (`--page-number`) — 自定义页码格式（如 `-- %d --`）
+- **增量转换** (`--incremental`) — MD5 内容哈希缓存，跳过未变更文件
+- **项目级配置** — `.md2word/config.yaml` + `.md2word/template.docx` 自动识别
+- **项目目录** (`--project-dir`) — 显式指定项目根目录
+- **academic-plus 主题** — 增强版学术模板，含摘要/关键词/参考文献引导段落
+- **redhead 主题** — 红头文件专用模板
+- **ConversionReport** — 结构化转换报告，支持错误追踪
+- **107 个测试** — 全面覆盖新功能

@@ -180,6 +180,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-footnotes", action="store_true", default=None,
         help="Disable footnote processing"
     )
+    parser.add_argument(
+        "--redhead", type=str, default=None, metavar="AUTHORITY",
+        help="Generate red-head official document (红头文件) with authority name"
+    )
+    parser.add_argument(
+        "--page-number", type=str, default=None, metavar="FMT",
+        help='Page number format, e.g. "-- %%d --" (default: none)'
+    )
+    parser.add_argument(
+        "--gb-check", action="store_true", default=None,
+        help="Check formatting against GB/T standards and report violations"
+    )
+    parser.add_argument(
+        "--incremental", action="store_true", default=None,
+        help="Skip conversion if source file unchanged (uses content hash cache)"
+    )
+    parser.add_argument(
+        "--project-dir", type=str, default=None, metavar="DIR",
+        help="Project root directory for .md2word/ config and templates"
+    )
 
     return parser.parse_args(argv)
 
@@ -280,6 +300,21 @@ def main(argv: list[str] | None = None) -> int:
     elif "toc" in cfg:
         use_toc = bool(cfg["toc"])
 
+    # ── Resolve project dir ────────────────────────────────────────────────
+    project_dir = None
+    if raw_args.project_dir:
+        project_dir = Path(raw_args.project_dir)
+    elif cfg.get("_project_dir"):
+        project_dir = Path(cfg["_project_dir"])
+
+    # ── Incremental cache ──────────────────────────────────────────────────
+    if raw_args.incremental:
+        from .converter import _load_cache, _save_cache, _file_hash
+        cache_path = (project_dir or Path.cwd()) / ".md2word_cache.json"
+        _cache = _load_cache(cache_path)
+    else:
+        _cache = None
+
     # ── Build conversion kwargs ────────────────────────────────────────────
     conv_kwargs = {
         "image_max_width": raw_args.image_width or 5.5,
@@ -292,6 +327,9 @@ def main(argv: list[str] | None = None) -> int:
         "page_break_h1": raw_args.page_break_h1 or False,
         "three_line_table": raw_args.three_line_table or False,
         "footnotes_enabled": not (raw_args.no_footnotes or False),
+        "redhead_authority": raw_args.redhead,
+        "page_number_fmt": raw_args.page_number,
+        "gb_check": raw_args.gb_check or False,
     }
 
     # ── Watch mode ─────────────────────────────────────────────────────────
@@ -309,6 +347,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  ❌ Input file not found: {in_path}", file=sys.stderr)
                 ok = False
                 continue
+
+            # ── Incremental: check hash ──────────────────────────────────────
+            if _cache is not None:
+                current_hash = _file_hash(in_path)
+                cached = _cache.get(str(in_path))
+                if cached == current_hash:
+                    print(f"[{i+1}/{len(inputs)}] ⏭️  Skipped (unchanged): {in_path}")
+                    continue
+
             md_text = in_path.read_text(encoding="utf-8")
             out_path = (
                 Path(raw_args.output) if raw_args.output and len(inputs) == 1
@@ -319,7 +366,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{i+1}/{len(inputs)}] Converting: {in_path}")
             print(f"  Template: {tpl}")
             print(f"  Output:   {out_path}")
-            convert(md_text, tpl, out_path, **conv_kwargs)
+            from .converter import convert as _convert
+            report = _convert(md_text, tpl, out_path, **conv_kwargs)
+
+            # ── Update incremental cache ──────────────────────────────
+            if _cache is not None and report is not None:
+                _cache[str(in_path)] = current_hash
+                _save_cache(cache_path, _cache)
+
         return 0 if ok else 1
 
     # ── Stdin ──────────────────────────────────────────────────────────────
@@ -332,8 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Converting: (stdin)")
     print(f"Template:   {tpl}")
     print(f"Output:     {out_path}")
-    convert(md_text, tpl, out_path, **conv_kwargs)
-    return 0
+    from .converter import convert as _convert
+    report = _convert(md_text, tpl, out_path, **conv_kwargs)
+    return 1 if report and report.has_errors() else 0
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -365,14 +420,19 @@ def _resolve_template(template_arg: str | None, theme: str | None) -> Path | Non
                 if candidate.exists():
                     return candidate
 
+    # Try .md2word/template.docx (project-level template)
+    md2word_template = Path(".md2word/template.docx")
+    if md2word_template.exists():
+        return md2word_template
+
     # Fallback: search known paths
     search: list[Path] = []
     for name in ["template1.docx", "官方公文.docx", "学术论文.docx",
-                  "技术文档.docx", "自媒体排版.docx"]:
+                  "技术文档.docx", "自媒体排版.docx", "红头文件.docx"]:
         search.append(Path(f"template/{name}"))
     search += [pkg_tpl / name for name in
                ["template1.docx", "官方公文.docx", "学术论文.docx",
-                "技术文档.docx", "自媒体排版.docx"]]
+                "技术文档.docx", "自媒体排版.docx", "红头文件.docx"]]
     for c in search:
         if c.exists():
             return c

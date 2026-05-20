@@ -28,7 +28,7 @@ class FootnoteDef(NamedTuple):
 
 # Footnote definition: [^id]: content (possibly multi-line)
 _DEF_PATTERN = re.compile(
-    r"^\[\^([^\]]+)\]:\s*(.*?)(?=\n(?:\[\^|$|\n(?!\s{2,})))",
+    r"^\[\^([^\]]+)\]:\s*(.*?)(?=\n(?:\[\^|$|\n(?!\s{2,}))|$)",
     re.MULTILINE | re.DOTALL,
 )
 
