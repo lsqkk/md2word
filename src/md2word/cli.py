@@ -544,7 +544,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "input", nargs="?", type=str, help="Input Markdown file (omit to read stdin)"
+        "inputs", nargs="*", type=str, default=[], help="Input Markdown file(s) (omit to read stdin)"
     )
     parser.add_argument("-o", "--output", type=str, default=None, help="Output .docx path")
     parser.add_argument(
@@ -552,6 +552,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--image-width", type=float, default=5.5, help="Max image width in inches (default: 5.5)"
+    )
+    parser.add_argument(
+        "--toc", action="store_true", default=None, help="Generate table of contents"
+    )
+    parser.add_argument(
+        "--no-toc", action="store_true", dest="no_toc", default=None, help="Skip table of contents"
+    )
+    parser.add_argument(
+        "--toc-depth", type=str, default="1-3", help="TOC heading depth range (default: 1-3)"
+    )
+    parser.add_argument(
+        "--no-highlight", action="store_true", dest="no_highlight", default=False,
+        help="Disable code syntax highlighting"
+    )
+    parser.add_argument(
+        "--no-math", action="store_true", dest="no_math", default=False,
+        help="Disable math formula rendering ($...$ / $$...$$)"
+    )
+    parser.add_argument(
+        "--no-mermaid", action="store_true", dest="no_mermaid", default=False,
+        help="Disable mermaid diagram rendering"
+    )
+    parser.add_argument(
+        "--number-headings", action="store_true", dest="number_headings", default=False,
+        help="Add auto-numbering to headings (1, 1.1, 1.1.1, etc.)"
+    )
+    parser.add_argument(
+        "--page-break", action="store_true", dest="page_break_h1", default=False,
+        help="Add page break before each H1 heading"
     )
     parser.add_argument(
         "--list-styles", action="store_true", help="List detected guide styles in a template"
@@ -574,6 +603,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--list-themes", action="store_true", help="List available template themes"
     )
     parser.add_argument("--version", action="store_true", help="Show version")
+    parser.add_argument(
+        "--validate-template", type=str, default=None, metavar="PATH",
+        help="Check a template for missing required guide paragraphs"
+    )
 
     return parser.parse_args(argv)
 
@@ -597,6 +630,19 @@ def main(argv: list[str] | None = None) -> int:
         _create_template(Path(args.create_template), theme=args.theme)
         return 0
 
+    if args.validate_template:
+        from .template import validate_template as _validate
+        result = _validate(args.validate_template)
+        print(f"Template: {args.validate_template}")
+        print(f"  Found: {', '.join(result['found']) or '(none)'}")
+        if result["missing_required"]:
+            print(f"  ❌ MISSING (required): {', '.join(result['missing_required'])}")
+        else:
+            print(f"  ✅ All required slots present")
+        if result["missing_recommended"]:
+            print(f"  ⚠️  MISSING (recommended): {', '.join(result['missing_recommended'])}")
+        return 1 if result["missing_required"] else 0
+
     if args.list_styles:
         tpl = args.template or _find_default_template()
         if not tpl:
@@ -617,38 +663,75 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
 
-    # Input
-    if args.input:
-        in_path = Path(args.input)
-        if not in_path.exists():
-            print(f"Input file not found: {in_path}", file=sys.stderr)
-            return 1
-        md_text = in_path.read_text(encoding="utf-8")
-    else:
-        md_text = sys.stdin.read()
-        in_path = None
-
-    # Output
-    if args.output:
-        out_path = Path(args.output)
-    elif in_path:
-        out_path = in_path.with_suffix(".docx")
-    else:
-        print("Output path required when reading from stdin (use -o)", file=sys.stderr)
-        return 1
-
-    # Template
+    # ── Batch conversion ────────────────────────────────────────────────────
     tpl = args.template or _find_default_template(args.theme)
     if not tpl:
         print("No template specified and no default found.", file=sys.stderr)
         print("Generate one: md2word --create-template template.docx")
         return 1
 
-    print(f"Converting: {args.input or '(stdin)'}")
+    # Determine TOC
+    use_toc = True
+    if args.no_toc:
+        use_toc = False
+    elif args.toc is not None:
+        use_toc = args.toc
+
+    inputs = args.inputs
+    if inputs:
+        ok = True
+        for i, in_str in enumerate(inputs):
+            in_path = Path(in_str)
+            if not in_path.exists():
+                print(f"Input file not found: {in_path}", file=sys.stderr)
+                ok = False
+                continue
+            md_text = in_path.read_text(encoding="utf-8")
+            out_path = (
+                Path(args.output) if args.output and len(inputs) == 1
+                else in_path.with_suffix(".docx")
+            )
+            if i > 0:
+                print()
+            print(f"[{i+1}/{len(inputs)}] Converting: {in_path}")
+            print(f"  Template: {tpl}")
+            print(f"  Output:   {out_path}")
+            convert(
+                md_text, tpl, out_path,
+                image_max_width=args.image_width,
+                toc=use_toc,
+                toc_depth=args.toc_depth,
+                highlight_enabled=not args.no_highlight,
+                math_enabled=not args.no_math,
+                mermaid_enabled=not args.no_mermaid,
+                number_headings=args.number_headings,
+                page_break_h1=args.page_break_h1,
+            )
+            print(f"  Done → {out_path}")
+        return 0 if ok else 1
+
+    # Single conversion from stdin
+    md_text = sys.stdin.read()
+    if not args.output:
+        print("Output path required when reading from stdin (use -o)", file=sys.stderr)
+        return 1
+    out_path = Path(args.output)
+
+    print(f"Converting: (stdin)")
     print(f"Template:   {tpl}")
     print(f"Output:     {out_path}")
 
-    convert(md_text, tpl, out_path, image_max_width=args.image_width)
+    convert(
+        md_text, tpl, out_path,
+        image_max_width=args.image_width,
+        toc=use_toc,
+        toc_depth=args.toc_depth,
+        highlight_enabled=not args.no_highlight,
+        math_enabled=not args.no_math,
+        mermaid_enabled=not args.no_mermaid,
+        number_headings=args.number_headings,
+        page_break_h1=args.page_break_h1,
+    )
     print(f"Done → {out_path}")
     return 0
 

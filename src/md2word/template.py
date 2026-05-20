@@ -147,13 +147,22 @@ _STYLE_KEYWORDS: dict[str, str] = {
     "bullet list": "bullet_list",
     "有序列表": "number_list",
     "ordered list": "number_list",
+    "目录标题": "toc_title",
+    "table of contents": "toc_title",
 }
 
 
 def _guess_slot(text: str) -> str | None:
-    lower = text.lower().strip()
+    """Match guide paragraph text to a style slot.
+
+    Strips whitespace and punctuation then does substring matching,
+    reducing false positives from incidental keyword inclusion.
+    """
+    import re
+    normalised = re.sub(r"[^a-zA-Z0-9一-鿿]", "", text.lower().strip())
     for keyword in sorted(_STYLE_KEYWORDS, key=len, reverse=True):
-        if keyword in lower:
+        kw_norm = re.sub(r"[^a-zA-Z0-9一-鿿]", "", keyword.lower())
+        if kw_norm and kw_norm in normalised:
             return _STYLE_KEYWORDS[keyword]
     return None
 
@@ -173,6 +182,28 @@ def extract_template_styles(template_path: str | Path) -> dict[str, ParagraphFor
     if "body" not in styles:
         styles["body"] = ParagraphFormat()
     return styles
+
+
+def validate_template(template_path: str | Path) -> dict[str, list[str]]:
+    """Validate a template and return missing/redundant guide slots."""
+    doc = Document(str(template_path))
+    found: set[str] = set()
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        if not text:
+            continue
+        slot = _guess_slot(text)
+        if slot:
+            found.add(slot)
+
+    required = {"h1", "h2", "h3", "body", "code"}
+    recommended = {"body_indent", "image", "figcaption", "quote", "bullet_list", "number_list"}
+
+    return {
+        "missing_required": sorted(required - found),
+        "missing_recommended": sorted(recommended - found),
+        "found": sorted(found),
+    }
 
 
 def list_template_styles(template_path: str | Path) -> list[dict[str, Any]]:

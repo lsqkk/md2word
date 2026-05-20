@@ -2,8 +2,42 @@
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+
+# ── Conversion report ───────────────────────────────────────────────────────
+
+
+@dataclass
+class ConversionReport:
+    """Tracks warnings and errors during conversion."""
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    info: list[str] = field(default_factory=list)
+
+    def warn(self, msg: str) -> None:
+        self.warnings.append(msg)
+        print(f"  [WARN] {msg}")
+
+    def error(self, msg: str) -> None:
+        self.errors.append(msg)
+        print(f"  [ERR]  {msg}")
+
+    def info_msg(self, msg: str) -> None:
+        self.info.append(msg)
+
+    def summary(self) -> str:
+        parts = []
+        if not self.warnings and not self.errors:
+            return "[OK] Conversion complete -- no warnings or errors."
+        if self.errors:
+            parts.append(f"[ERR] {len(self.errors)} error(s)")
+        if self.warnings:
+            parts.append(f"[WARN] {len(self.warnings)} warning(s)")
+        return f"Conversion complete -- {', '.join(parts)}."
 
 import markdown
 from docx import Document
@@ -19,6 +53,9 @@ from .image_utils import (
     resolve_image,
     resolve_svg_raw,
 )
+from .math_renderer import extract_and_placeholder, has_math, render_math_svg
+from .mermaid_renderer import render_mermaid
+from .syntax import extract_language, highlight
 from .template import (
     ParagraphFormat,
     extract_template_styles,
@@ -37,6 +74,27 @@ def _strip_front_matter(text: str) -> str:
         if end != -1:
             return text[end + 3 :].lstrip()
     return text
+
+
+def _postprocess_math_html(html: str, math_exprs: list[dict]) -> str:
+    """Render math LaTeX to SVG and replace placeholders with <img> tags."""
+    import base64
+
+    result = html
+    for expr in math_exprs:
+        svg_bytes, w_px, h_px = render_math_svg(expr["latex"], expr["kind"])
+        latex = expr["latex"]
+        if svg_bytes:
+            b64 = base64.b64encode(svg_bytes).decode("ascii")
+            replacement = (
+                f'<img class="math-{expr["kind"]}" src="" '
+                f'data-svg-base64="{b64}" '
+                f'alt="[{latex[:60]}]"/>'
+            )
+        else:
+            replacement = f'<span class="math-fallback">[{latex[:80]}]</span>'
+        result = result.replace(expr["placeholder"], replacement)
+    return result
 
 
 # ── HTML parsing ────────────────────────────────────────────────────────────
@@ -143,7 +201,15 @@ def _build_runs(doc: Document, p, elem: ET.Element, base_fmt: ParagraphFormat) -
         elif tag == "img":
             src = child.get("src", "")
             alt = child.get("alt", "")
-            if is_svg_source(src):
+            svg_b64 = child.get("data-svg-base64", "")
+            if svg_b64:
+                import base64
+                svg_data = base64.b64decode(svg_b64)
+                if svg_data:
+                    _embed_svg_in_paragraph(doc, p, svg_data, alt, 3.5)
+                else:
+                    _push_run(p, f"[Math: {alt}]", base_fmt, italic=True)
+            elif is_svg_source(src):
                 svg_data = resolve_svg_raw(src)
                 if svg_data:
                     _embed_svg_in_paragraph(doc, p, svg_data, alt, 4.0)
@@ -164,16 +230,20 @@ def _build_runs(doc: Document, p, elem: ET.Element, base_fmt: ParagraphFormat) -
             _push_detect(child.tail)
 
 
-def _split_by_br(elem: ET.Element) -> list[str]:
-    """Split element text by <br/> tags into segments."""
-    segments: list[str] = []
+def _split_by_br(elem: ET.Element) -> list[tuple[str, ET.Element | None]]:
+    """Split element content by <br/> tags.
+
+    Returns list of (text, img_element) pairs — *img_element* is ``None``
+    for plain-text segments and the ``<img>`` element for image-only segments.
+    """
+    segments: list[tuple[str, ET.Element | None]] = []
     buf: list[str] = []
 
     def _flush():
         nonlocal buf
         text = "".join(buf).strip()
         if text:
-            segments.append(text)
+            segments.append((text, None))
         buf = []
 
     if elem.text:
@@ -181,12 +251,62 @@ def _split_by_br(elem: ET.Element) -> list[str]:
     for child in elem:
         if child.tag == "br":
             _flush()
-        elif child.tag in ("strong", "b", "em", "i", "a", "code"):
+        elif child.tag == "img":
+            _flush()
+            segments.append(("", child))
+        else:
             buf.append(_inline_text(child))
         if child.tail:
             buf.append(child.tail)
     _flush()
-    return segments if segments else [""]
+    if not segments:
+        segments = [("", None)]
+    return segments
+
+
+# ── Table of Contents ───────────────────────────────────────────────────────
+
+
+def _add_toc(doc: Document, styles: dict, depth: str = "1-3") -> None:
+    """Insert a TOC field at the beginning of the document."""
+    # Title
+    toc_fmt = styles.get("toc_title", styles.get("h1", ParagraphFormat()))
+    p_title = doc.add_paragraph()
+    toc_fmt.apply_to_paragraph(p_title)
+    r = p_title.add_run("目录")
+    toc_fmt.apply_to_run(r)
+
+    # TOC field
+    p = doc.add_paragraph()
+
+    def _mk_r(*children) -> OxmlElement:
+        r = OxmlElement("w:r")
+        for c in children:
+            r.append(c)
+        return r
+
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    p._p.append(_mk_r(begin))
+
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = f' TOC \\o "{depth}" \\h \\z \\u '
+    p._p.append(_mk_r(instr))
+
+    separate = OxmlElement("w:fldChar")
+    separate.set(qn("w:fldCharType"), "separate")
+    p._p.append(_mk_r(separate))
+
+    p_ph = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "（更新域以生成目录，Ctrl+A → F9）"
+    p_ph.append(t)
+    p._p.append(p_ph)
+
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    p._p.append(_mk_r(end))
 
 
 # ── oxml helpers ────────────────────────────────────────────────────────────
@@ -312,33 +432,69 @@ def _style_table(table) -> None:
 # ── block handlers ──────────────────────────────────────────────────────────
 
 
+_HEADING_COUNTERS: list[int] = []
+
+
+def _reset_heading_counters(max_level: int = 6) -> None:
+    global _HEADING_COUNTERS
+    _HEADING_COUNTERS = [0] * (max_level + 1)
+
+
+def _next_heading_number(level: int) -> str:
+    """Return the heading number (e.g. '1', '1.2', '2.3.1')."""
+    global _HEADING_COUNTERS
+    _HEADING_COUNTERS[level] += 1
+    for i in range(level + 1, len(_HEADING_COUNTERS)):
+        _HEADING_COUNTERS[i] = 0
+    return ".".join(str(_HEADING_COUNTERS[l]) for l in range(1, level + 1))
+
+
+def _add_page_break(doc: Document) -> None:
+    """Add a page break paragraph."""
+    p = doc.add_paragraph()
+    run = p.add_run()
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    run._r.append(br)
+
+
 def _handle_heading(
-    doc: Document, elem: ET.Element, level: int, styles: dict
+    doc: Document, elem: ET.Element, level: int, styles: dict,
+    number_headings: bool = False,
+    page_break: bool = False,
 ) -> None:
     slot = styles.get(f"h{level}") or styles.get("body", ParagraphFormat())
+    if page_break and level == 1:
+        _add_page_break(doc)
     p = doc.add_paragraph()
     slot.apply_to_paragraph(p)
+    if number_headings:
+        num = _next_heading_number(level)
+        _push_run(p, f"{num} ", slot)
     _build_runs(doc, p, elem, slot)
     _set_outline_level(p, level)
 
 
-def _handle_paragraph(doc: Document, elem: ET.Element, styles: dict) -> None:
+def _handle_paragraph(doc: Document, elem: ET.Element, styles: dict, image_max_width: float = 5.5) -> None:
     """Normal paragraph — detects lone images and embedded <br>."""
     imgs = elem.findall("img")
     if len(imgs) == 1 and not elem.text and not any(
         c.tag != "img" for c in elem
     ):
-        return _handle_image(doc, imgs[0], styles)
+        return _handle_image(doc, imgs[0], styles, image_max_width=image_max_width)
 
     fmt = styles.get("body", ParagraphFormat())
 
-    # <br> → new paragraph
+    # <br> → new paragraph (handle text+img mixed content)
     brs = elem.findall(".//br")
     if brs:
-        for part in _split_by_br(elem):
-            p = doc.add_paragraph()
-            fmt.apply_to_paragraph(p)
-            _push_run(p, part, fmt)
+        for text_part, img_part in _split_by_br(elem):
+            if img_part is not None:
+                _handle_image(doc, img_part, styles, image_max_width=image_max_width)
+            elif text_part:
+                p = doc.add_paragraph()
+                fmt.apply_to_paragraph(p)
+                _push_run(p, text_part, fmt)
         return
 
     p = doc.add_paragraph()
@@ -346,13 +502,29 @@ def _handle_paragraph(doc: Document, elem: ET.Element, styles: dict) -> None:
     _build_runs(doc, p, elem, fmt)
 
 
-def _handle_image(doc: Document, elem: ET.Element, styles: dict) -> None:
+def _handle_image(doc: Document, elem: ET.Element, styles: dict, image_max_width: float = 5.5) -> None:
     """Image with alt-text caption below. Supports raster and SVG."""
     src = elem.get("src", "")
     alt = elem.get("alt", "")
     img_fmt = styles.get("image", ParagraphFormat())
 
-    if is_svg_source(src):
+    # Detect math formula (generated by _postprocess_math_html)
+    is_math = bool(elem.get("data-svg-base64", ""))
+
+    # Math SVG via embedded data
+    svg_b64 = elem.get("data-svg-base64", "")
+    if svg_b64:
+        import base64
+        svg_data = base64.b64decode(svg_b64)
+        if not svg_data:
+            p = doc.add_paragraph()
+            _push_run(p, f"[Math: {alt}]", ParagraphFormat(), italic=True)
+            return
+        p = doc.add_paragraph()
+        if not is_math:
+            img_fmt.apply_to_paragraph(p)
+        _embed_svg_in_paragraph(doc, p, svg_data, alt, max_width_inches=image_max_width)
+    elif is_svg_source(src):
         svg_data = resolve_svg_raw(src)
         if svg_data is None:
             p = doc.add_paragraph()
@@ -373,7 +545,7 @@ def _handle_image(doc: Document, elem: ET.Element, styles: dict) -> None:
         run = p.add_run()
         run.add_picture(stream, width=width, height=height)
 
-    if alt:
+    if alt and not is_math:
         cap_fmt = styles.get("figcaption", ParagraphFormat())
         if cap_fmt.font_name is None:
             p_cap = doc.add_paragraph()
@@ -403,45 +575,186 @@ def _handle_blockquote(doc: Document, elem: ET.Element, styles: dict) -> None:
             _build_runs(doc, p, child if child.tag else elem, fmt)
 
 
-def _handle_code_block(doc: Document, elem: ET.Element, styles: dict) -> None:
-    """Code block — each line is a paragraph."""
+def _handle_code_block(doc: Document, elem: ET.Element, styles: dict,
+                       highlight_enabled: bool = True,
+                       mermaid_enabled: bool = True) -> None:
+    """Code block — each line is a paragraph, with optional syntax highlighting."""
     fmt = styles.get("code", ParagraphFormat())
+    code_elem = elem.find("code")
+    lang = extract_language(code_elem) if code_elem is not None else ""
+
     text = _inline_text(elem)
-    for line in text.split("\n"):
+
+    # ── Mermaid diagram ──────────────────────────────────────────────────
+    if mermaid_enabled and lang == "mermaid" and text.strip():
+        result = render_mermaid(text.strip())
+        if result:
+            img_fmt = styles.get("image", ParagraphFormat())
+            p = doc.add_paragraph()
+            img_fmt.apply_to_paragraph(p)
+            _embed_svg_in_paragraph(doc, p, result.svg_bytes, "mermaid", max_width_inches=5.5)
+            return
+        else:
+            print("  [WARN] Falling back to plain text for mermaid block")
+
+    tokens = None
+    if highlight_enabled and lang != "mermaid":
+        tokens = highlight(text, lang)
+
+    for line in text.strip().split('\n'):
         p = doc.add_paragraph()
         fmt.apply_to_paragraph(p)
-        run = p.add_run(line if line else " ")
-        fmt.apply_to_run(run)
-        set_run_font(run, fmt.font_name or "DengXian", fmt.east_asia_font or "DengXian")
+        if not line:
+            run = p.add_run(" ")
+            fmt.apply_to_run(run)
+            set_run_font(run, fmt.font_name or "DengXian", fmt.east_asia_font or "DengXian")
+            continue
+
+        if tokens:
+            line_tokens = _tokens_for_line(tokens, line)
+            for tok in line_tokens:
+                run = p.add_run(tok.text)
+                fmt.apply_to_run(run)
+                set_run_font(run, fmt.font_name or "Consolas", fmt.east_asia_font or "DengXian")
+                if tok.color:
+                    run.font.color.rgb = tok.color
+                if tok.bold:
+                    run.font.bold = True
+                if tok.italic:
+                    run.font.italic = True
+        else:
+            run = p.add_run(line)
+            fmt.apply_to_run(run)
+            set_run_font(run, fmt.font_name or "DengXian", fmt.east_asia_font or "DengXian")
+
+
+def _tokens_for_line(tokens: list, line_text: str) -> list:
+    """Filter tokens to match a single line."""
+    line = line_text.rstrip("\n")
+    result = []
+    offset = 0
+    for tok in tokens:
+        if offset >= len(line):
+            break
+        # Find this token's text in the line starting at offset
+        idx = line.find(tok.text, offset)
+        if idx == -1:
+            # Token not found in remaining line — skip
+            continue
+        if idx > offset:
+            # Gap before this token — add as plain text
+            result.append(type(tok)(text=line[offset:idx], color=None, bold=False, italic=False))
+        result.append(tok)
+        offset = idx + len(tok.text)
+    if offset < len(line):
+        result.append(type(tok)(text=line[offset:], color=None, bold=False, italic=False))
+    return result
 
 
 def _handle_unordered_list(
-    doc: Document, elem: ET.Element, styles: dict
+    doc: Document, elem: ET.Element, styles: dict, depth: int = 0
 ) -> None:
-    """Unordered list with bullet prefix."""
+    """Unordered list with bullet prefix. Supports nesting."""
     fmt = styles.get("bullet_list", styles.get("body", ParagraphFormat()))
-    for li in elem.findall("li"):
+    bullets = ["• ", "◦ ", "▪ ", "▸ "]
+    for li in elem:
+        if li.tag != "li":
+            continue
+        # Process nested lists inside this <li>
+        nested = li.findall("ul") + li.findall("ol")
+        # Build runs from <li> content, excluding nested list children
         p = doc.add_paragraph()
         fmt.apply_to_paragraph(p)
         if fmt.left_indent_emu is None:
-            p.paragraph_format.left_indent = Inches(0.5)
-        bullet = p.add_run("• ")
+            p.paragraph_format.left_indent = Inches(0.35 * (depth + 1))
+        bullet = p.add_run(bullets[min(depth, len(bullets) - 1)])
         fmt.apply_to_run(bullet)
-        _build_runs(doc, p, li, fmt)
+        _build_runs_skip(doc, p, li, fmt, skip_tags={"ul", "ol"})
+        if nested:
+            for nest in nested:
+                if nest.tag == "ul":
+                    _handle_unordered_list(doc, nest, styles, depth + 1)
+                else:
+                    _handle_ordered_list(doc, nest, styles, depth + 1)
 
 
 def _handle_ordered_list(
-    doc: Document, elem: ET.Element, styles: dict
+    doc: Document, elem: ET.Element, styles: dict, depth: int = 0
 ) -> None:
-    """Ordered list with number prefix."""
+    """Ordered list with number prefix. Supports nesting."""
     fmt = styles.get("number_list", styles.get("body", ParagraphFormat()))
-    for idx, li in enumerate(elem.findall("li"), 1):
+    idx = 1
+    for child in elem:
+        if child.tag != "li":
+            continue
+        nested = child.findall("ul") + child.findall("ol")
         p = doc.add_paragraph()
         fmt.apply_to_paragraph(p)
         if fmt.left_indent_emu is None:
-            p.paragraph_format.left_indent = Inches(0.5)
+            p.paragraph_format.left_indent = Inches(0.35 * (depth + 1))
         _push_run(p, f"{idx}. ", fmt)
-        _build_runs(doc, p, li, fmt)
+        _build_runs_skip(doc, p, child, fmt, skip_tags={"ul", "ol"})
+        idx += 1
+        if nested:
+            for nest in nested:
+                if nest.tag == "ul":
+                    _handle_unordered_list(doc, nest, styles, depth + 1)
+                else:
+                    _handle_ordered_list(doc, nest, styles, depth + 1)
+
+
+def _build_runs_skip(doc, p, elem, base_fmt, skip_tags=None):
+    """Like _build_runs but skips child tags in *skip_tags*."""
+    def _inner(e):
+        text_parts = []
+        if e.text:
+            text_parts.append(e.text)
+        for child in e:
+            if skip_tags and child.tag in skip_tags:
+                if child.tail:
+                    text_parts.append(child.tail)
+                continue
+            if child.tag in ("strong", "b"):
+                _push_run(p, child.text or "", base_fmt, bold=True)
+            elif child.tag in ("em", "i"):
+                _push_run(p, child.text or "", base_fmt, italic=True)
+            elif child.tag == "code":
+                _push_run(p, child.text or "", base_fmt, name="DengXian")
+            elif child.tag == "a":
+                txt = child.text or child.get("href", "")
+                _push_run(p, txt, base_fmt, underline=True, color=RGBColor(0x00, 0x52, 0xCC))
+            elif child.tag == "img":
+                _build_runs_img(doc, p, child, base_fmt)
+            else:
+                _push_run(p, child.text or "", base_fmt)
+            if child.tail:
+                text_parts.append(child.tail)
+        return "".join(text_parts)
+    text = _inner(elem)
+    if text:
+        _push_run(p, text, base_fmt)
+
+
+def _build_runs_img(doc, p, child, base_fmt):
+    """Handle an <img> inside a list item."""
+    src = child.get("src", "")
+    alt = child.get("alt", "")
+    svg_b64 = child.get("data-svg-base64", "")
+    if svg_b64:
+        import base64
+        svg_data = base64.b64decode(svg_b64)
+        if svg_data:
+            _embed_svg_in_paragraph(doc, p, svg_data, alt, 3.5)
+    elif is_svg_source(src):
+        svg_data = resolve_svg_raw(src)
+        if svg_data:
+            _embed_svg_in_paragraph(doc, p, svg_data, alt, 3.5)
+    else:
+        stream = resolve_image(src)
+        if stream is not None:
+            w, h = get_image_dimensions(stream, max_width_inches=3.5)
+            run = p.add_run()
+            run.add_picture(stream, width=w, height=h)
 
 
 def _handle_table(doc: Document, elem: ET.Element, styles: dict) -> None:
@@ -512,6 +825,13 @@ def convert(
     output_path: str | Path,
     *,
     image_max_width: float = 5.5,
+    toc: bool = True,
+    toc_depth: str = "1-3",
+    highlight_enabled: bool = True,
+    math_enabled: bool = True,
+    mermaid_enabled: bool = True,
+    number_headings: bool = False,
+    page_break_h1: bool = False,
 ) -> None:
     """Convert *markdown_text* to a Word document.
 
@@ -520,10 +840,20 @@ def convert(
         template_path: Path to the .docx template with guide paragraphs.
         output_path: Where to write the result.
         image_max_width: Maximum image width in inches.
+        toc: Whether to generate a Table of Contents.
+        toc_depth: Heading levels to include, e.g. "1-3".
     """
     styles = extract_template_styles(template_path)
+    report = ConversionReport()
+    styles["_report"] = report
 
     markdown_text = _strip_front_matter(markdown_text)
+
+    # ── Math preprocessing: extract LaTeX expressions ──────────────────────
+    if math_enabled:
+        markdown_text, math_exprs = extract_and_placeholder(markdown_text)
+    else:
+        math_exprs = []
 
     html = markdown.markdown(
         markdown_text,
@@ -531,12 +861,16 @@ def convert(
             "extra",
             "tables",
             "fenced_code",
-            "codehilite",
             "sane_lists",
         ],
     )
 
     html = _prepare_html(html)
+
+    # ── Math postprocessing: render LaTeX to SVG, embed in HTML ───────────
+    if math_exprs:
+        html = _postprocess_math_html(html, math_exprs)
+
     blocks = _html_to_blocks(html)
 
     doc = Document(str(template_path))
@@ -547,19 +881,43 @@ def convert(
         p = doc.paragraphs[0]._p
         p.getparent().remove(p)
 
+    # ── Table of Contents ─────────────────────────────────────────────────
+    if toc:
+        _add_toc(doc, styles, depth=toc_depth)
+
+    # Set Word to update fields (e.g. TOC) on open
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    settings_el = doc.settings._element
+    up = settings_el.find(qn("w:updateFields"))
+    if up is None:
+        up = OxmlElement("w:updateFields")
+        up.set(qn("w:val"), "true")
+        settings_el.append(up)
+    else:
+        up.set(qn("w:val"), "true")
+
+    # ── Heading numbering ─────────────────────────────────────────────────
+    if number_headings:
+        _reset_heading_counters()
+
     for block in blocks:
         tag = block.tag
         try:
             if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
-                _handle_heading(doc, block, int(tag[1]), styles)
+                _handle_heading(doc, block, int(tag[1]), styles,
+                                number_headings=number_headings,
+                                page_break=page_break_h1)
             elif tag == "p":
-                _handle_paragraph(doc, block, styles)
+                _handle_paragraph(doc, block, styles, image_max_width=image_max_width)
             elif tag == "img":
-                _handle_image(doc, block, styles)
+                _handle_image(doc, block, styles, image_max_width=image_max_width)
             elif tag == "blockquote":
                 _handle_blockquote(doc, block, styles)
             elif tag == "pre":
-                _handle_code_block(doc, block, styles)
+                _handle_code_block(doc, block, styles,
+                                    highlight_enabled=highlight_enabled,
+                                    mermaid_enabled=mermaid_enabled)
             elif tag == "ul":
                 _handle_unordered_list(doc, block, styles)
             elif tag == "ol":
@@ -571,6 +929,7 @@ def convert(
             else:
                 _handle_paragraph(doc, block, styles)
         except Exception as e:
-            print(f"  [WARN] Failed to process <{tag}> block: {e}")
+            report.warn(f"Failed to process <{tag}> block: {e}")
 
     doc.save(str(output_path))
+    print(f"  {report.summary()}")
