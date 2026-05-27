@@ -19,8 +19,10 @@ venv/
 # Agent / AI
 .claude/
 CLAUDE.md
+private/
 
 # Project specific
 test-output.docx
+_test/
 *.docx
 !template/*.docx
