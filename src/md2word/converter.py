@@ -206,7 +206,8 @@ def _postprocess_math_html(html: str, math_exprs: list[dict]) -> str:
     for expr in math_exprs:
         latex = expr["latex"]
         kind = expr["kind"]
-        alt = f"[{latex[:60]}]"
+        from xml.sax.saxutils import escape as _xml_escape
+        alt = _xml_escape(f"[{latex[:60]}]")
 
         # Try OMML first — yields editable native Word formulas
         omml = _latex_to_omml(latex, kind == "block")
