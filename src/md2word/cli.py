@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import glob as _glob
 import sys
 from pathlib import Path
 
@@ -97,10 +98,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "inputs", nargs="*", type=str, default=[],
-        help="Input Markdown file(s) (omit to read stdin)"
+        help="Input Markdown file(s) (supports glob patterns; omit to read stdin)"
     )
     parser.add_argument("-o", "--output", type=str, default=None,
                         help="Output .docx path")
+    parser.add_argument(
+        "--out-dir", type=str, default=None,
+        help="Output directory for batch conversion (default: same dir as input)"
+    )
     parser.add_argument(
         "-t", "--template", type=str, default=None,
         help="Template .docx with guide paragraphs"
@@ -200,8 +205,49 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--project-dir", type=str, default=None, metavar="DIR",
         help="Project root directory for .md2word/ config and templates"
     )
+    parser.add_argument(
+        "--verbose", action="store_true", default=None,
+        help="Show detailed progress information"
+    )
 
     return parser.parse_args(argv)
+
+
+def _expand_glob_patterns(patterns: list[str]) -> list[str]:
+    """Expand glob patterns in input list.
+
+    Non-glob paths are returned as-is.  Glob patterns are expanded using
+    Python's ``glob.glob`` with ``recursive=True``.
+    """
+    result: list[str] = []
+    for pattern in patterns:
+        if any(c in pattern for c in ("*", "?", "[", "]")):
+            matches = _glob.glob(pattern, recursive=True)
+            if matches:
+                result.extend(sorted(matches))
+            else:
+                result.append(pattern)
+        else:
+            result.append(pattern)
+    return result
+
+
+def _resolve_output_path(
+    in_path: Path, out_dir: str | Path | None, explicit_output: str | None,
+    input_count: int,
+) -> Path:
+    """Determine output path for a conversion.
+
+    Priority:
+    1. Explicit ``--output`` path (only when converting single file)
+    2. ``--out-dir`` + input filename with .docx extension
+    3. Same directory as input with .docx extension
+    """
+    if explicit_output and input_count == 1:
+        return Path(explicit_output)
+    if out_dir:
+        return Path(out_dir) / in_path.with_suffix(".docx").name
+    return in_path.with_suffix(".docx")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -223,9 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     # ── Load config ────────────────────────────────────────────────────────
     cfg = {}
     if args.get("config"):
-        from .config import load_config as _load
         try:
-            cfg = _load(Path(args["config"]).parent)
+            cfg = load_config(Path(args["config"]).parent)
         except Exception as e:
             print(f"  [ERROR] Failed to load config '{args['config']}': {e}",
                   file=sys.stderr)
@@ -256,11 +301,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Template: {raw_args.validate_template}")
         print(f"  Found: {', '.join(result['found']) or '(none)'}")
         if result["missing_required"]:
-            print(f"  ❌ MISSING (required): {', '.join(result['missing_required'])}")
+            print(f"  ❌ 缺少必需: {', '.join(result['missing_required'])}")
         else:
-            print(f"  ✅ All required slots present")
+            print(f"  ✅ 所有必需槽位齐全")
         if result["missing_recommended"]:
-            print(f"  ⚠️  MISSING (recommended): {', '.join(result['missing_recommended'])}")
+            print(f"  ⚠️  缺少推荐: {', '.join(result['missing_recommended'])}")
         return 1 if result["missing_required"] else 0
 
     # ── List styles ────────────────────────────────────────────────────────
@@ -300,7 +345,6 @@ def main(argv: list[str] | None = None) -> int:
     elif "toc" in cfg:
         use_toc = bool(cfg["toc"])
 
-    # 红头文件默认无目录，除非用户在配置或 CLI 中显式设置
     if raw_args.redhead and "toc" not in cfg and raw_args.toc is None and raw_args.no_toc is None:
         use_toc = False
 
@@ -336,44 +380,50 @@ def main(argv: list[str] | None = None) -> int:
         "gb_check": raw_args.gb_check or False,
     }
 
+    if raw_args.verbose:
+        print("  详细模式: 已启用")
+
+    # ── Expand input list with glob ────────────────────────────────────────
+    raw_inputs = raw_args.inputs
+    inputs = _expand_glob_patterns(raw_inputs) if raw_inputs else []
+
     # ── Watch mode ─────────────────────────────────────────────────────────
     if raw_args.watch:
-        _watch_mode(raw_args.inputs, tpl, conv_kwargs)
+        _watch_mode(inputs if inputs else raw_inputs, tpl, conv_kwargs)
         return 0
 
+    # ── Resolve output dir ─────────────────────────────────────────────────
+    out_dir = raw_args.out_dir
+    if out_dir:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
     # ── Batch conversion ───────────────────────────────────────────────────
-    inputs = raw_args.inputs
     if inputs:
         ok = True
         for i, in_str in enumerate(inputs):
             in_path = Path(in_str)
             if not in_path.exists():
-                print(f"  ❌ Input file not found: {in_path}", file=sys.stderr)
+                print(f"  ❌ 输入文件未找到: {in_path}", file=sys.stderr)
                 ok = False
                 continue
 
-            # ── Incremental: check hash ──────────────────────────────────────
             if _cache is not None:
                 current_hash = _file_hash(in_path)
                 cached = _cache.get(str(in_path))
                 if cached == current_hash:
-                    print(f"[{i+1}/{len(inputs)}] ⏭️  Skipped (unchanged): {in_path}")
+                    print(f"[{i+1}/{len(inputs)}] ⏭️ 跳过（未更改）: {in_path}")
                     continue
 
             md_text = in_path.read_text(encoding="utf-8")
-            out_path = (
-                Path(raw_args.output) if raw_args.output and len(inputs) == 1
-                else in_path.with_suffix(".docx")
-            )
+            out_path = _resolve_output_path(in_path, out_dir, raw_args.output, len(inputs))
+
             if i > 0:
                 print()
-            print(f"[{i+1}/{len(inputs)}] Converting: {in_path}")
-            print(f"  Template: {tpl}")
-            print(f"  Output:   {out_path}")
-            from .converter import convert as _convert
-            report = _convert(md_text, tpl, out_path, **conv_kwargs)
+            print(f"[{i+1}/{len(inputs)}] 转换中: {in_path}")
+            print(f"  模板: {tpl}")
+            print(f"  输出: {out_path}")
+            report = convert(md_text, tpl, out_path, **conv_kwargs)
 
-            # ── Update incremental cache ──────────────────────────────
             if _cache is not None and report is not None:
                 _cache[str(in_path)] = current_hash
                 _save_cache(cache_path, _cache)
@@ -383,15 +433,14 @@ def main(argv: list[str] | None = None) -> int:
     # ── Stdin ──────────────────────────────────────────────────────────────
     md_text = sys.stdin.read()
     if not raw_args.output:
-        print("  ❌ Output path required when reading from stdin (use -o)",
+        print("  ❌ 从 stdin 读取时需要指定输出路径（使用 -o）",
               file=sys.stderr)
         return 1
     out_path = Path(raw_args.output)
-    print(f"Converting: (stdin)")
-    print(f"Template:   {tpl}")
-    print(f"Output:     {out_path}")
-    from .converter import convert as _convert
-    report = _convert(md_text, tpl, out_path, **conv_kwargs)
+    print(f"转换中: (stdin)")
+    print(f"  模板: {tpl}")
+    print(f"  输出: {out_path}")
+    report = convert(md_text, tpl, out_path, **conv_kwargs)
     return 1 if report and report.has_errors() else 0
 
 
@@ -406,16 +455,13 @@ def _resolve_template(template_arg: str | None, theme: str | None) -> Path | Non
         p = Path(template_arg)
         if p.exists():
             return p
-        # Also try relative to package template dir (supports config files elsewhere)
         pkg_candidate = pkg_tpl / p.name
         if pkg_candidate.exists():
             return pkg_candidate
-        # Not an error if it's from config — we'll try defaults below
         if p.is_absolute():
-            print(f"  [WARN] Template not found: {p}", file=sys.stderr)
+            print(f"  [WARN] 模板未找到: {p}", file=sys.stderr)
             return None
 
-    # Try theme -> filename mapping
     if theme:
         spec = get_theme(theme)
         if spec:
@@ -424,12 +470,10 @@ def _resolve_template(template_arg: str | None, theme: str | None) -> Path | Non
                 if candidate.exists():
                     return candidate
 
-    # Try .md2word/template.docx (project-level template)
     md2word_template = Path(".md2word/template.docx")
     if md2word_template.exists():
         return md2word_template
 
-    # Fallback: search known paths
     search: list[Path] = []
     for name in ["template1.docx", "官方公文.docx", "学术论文.docx",
                   "技术文档.docx", "自媒体排版.docx", "红头文件.docx"]:
@@ -485,7 +529,7 @@ def _watch_with_watchdog(
     for p in paths:
         target = p if p.is_dir() else p.parent
         observer.schedule(_Handler(), str(target), recursive=False)
-    print(f"  👁️  Watching {len(paths)} path(s) for .md changes (Ctrl+C to stop)")
+    print(f"  👁️  正在监听 {len(paths)} 个路径的 .md 变化（Ctrl+C 停止）")
     try:
         observer.start()
         import time
@@ -503,7 +547,6 @@ def _watch_polling(
 ) -> None:
     import time
 
-    # Gather initial files
     targets: dict[Path, float] = {}
     for p in paths:
         if p.is_dir():
@@ -513,7 +556,7 @@ def _watch_polling(
         elif p.suffix == ".md":
             targets[p] = p.stat().st_mtime
 
-    print(f"  👁️  Watching {len(targets)} .md file(s) for changes (Ctrl+C to stop)")
+    print(f"  👁️  正在监听 {len(targets)} 个 .md 文件（Ctrl+C 停止）")
     try:
         while True:
             changed = False
@@ -529,7 +572,7 @@ def _watch_polling(
             if not changed:
                 time.sleep(2)
     except KeyboardInterrupt:
-        print("  Watch stopped.")
+        print("  监听已停止。")
 
 
 def _convert_if_md(
@@ -542,11 +585,11 @@ def _convert_if_md(
     try:
         md_text = path.read_text(encoding="utf-8")
         out_path = path.with_suffix(".docx")
-        print(f"\n  🔄 Changed: {path.name}")
+        print(f"\n  🔄 已变更: {path.name}")
         convert(md_text, template_path, out_path, **conv_kwargs)
         print(f"  ✅ {out_path.name}")
     except Exception as e:
-        print(f"  ❌ Failed: {e}")
+        print(f"  ❌ 失败: {e}")
 
 
 if __name__ == "__main__":

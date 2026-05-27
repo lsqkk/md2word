@@ -420,7 +420,19 @@ watch: false
 
 ## 版本历史
 
-### v1.3.0（当前）
+### v1.5.0（当前）
+- **架构重构**：`converter.py` 拆分为 6 个模块（`handlers.py`、`ooxml_helpers.py`、`metadata.py`、`context.py`、`frontmatter.py`）
+- **ConversionContext**：全局状态封装为数据类，批量转换安全可重入
+- **ConversionReport 增强**：增加 severity 级别（info/warning/error/critical）
+- **新 Markdown 语法**：`~~删除线~~`、`==高亮==`、`^上标^`、`~下标~`
+- **任务列表**：`- [x] 已完成` / `- [ ] 待办` 完整支持（含嵌套列表）
+- **YAML frontmatter**：`title`/`author`/`date` 写入 docx 属性，`keywords`/`abstract` 支持
+- **交叉引用修复**：`[文字](#标题锚点)` 使用标题文本作为书签名，REF 域可正确跳转
+- **`--out-dir`**：批量转换时指定输出目录
+- **glob 支持**：`md2word "docs/**/*.md"` 自动展开通配符
+- **集成测试**：23 个新测试，端到端验证 docx 输出结构
+
+### v1.3.0
 - `--redhead AUTHORITY`：红头文件，自动生成发文机关红头 + 分隔线 + 文号
 - `--gb-check`：GB/T 9704-2012 合规检查（页边距、字体）
 - `--page-number FMT`：自定义页码格式

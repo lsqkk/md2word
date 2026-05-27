@@ -4,18 +4,23 @@
 - Python 3.10+, python-docx, markdown, Pillow, requests
 - Optional: Pygments (highlight), matplotlib (math), resvg (SVG), watchdog (watch)
 - CLI entry via `md2word` command (registered system-wide)
-- v1.3.0: 107 tests, all passing
+- v1.5.0: 131 tests, all passing
 
 ## Structure
 ```
 src/md2word/
-├── __init__.py          — Version info (v1.3.0)
+├── __init__.py          — Version info (v1.5.0)
 ├── __main__.py          — python -m md2word entry
 ├── cli.py               — CLI: arg parsing, orchestration, config merge, watch mode
-├── converter.py         — Core: MD → HTML → docx with template styles
+├── converter.py         — Orchestration: MD → HTML → docx pipeline (reduced)
+├── handlers.py          — Block processors (_handle_*) + inline run builders
+├── ooxml_helpers.py     — OOXML ops (bookmarks, fields, SVG, numbering, TOC)
+├── metadata.py          — Post-processing, GB compliance, red-head, page numbers
+├── context.py           — ConversionContext + ConversionReport with severity
+├── frontmatter.py       — YAML frontmatter ← → docx properties
 ├── config.py            — Config file support (md2word.yaml / pyproject.toml)
 ├── template.py          — Style extraction, validation, guide paragraph matching
-├── themes.py            — Theme specs & template builder (6 themes: official, academic, academic-plus, tech, media, redhead)
+├── themes.py            — Theme specs & template builder (6 themes)
 ├── footnotes.py         — Footnote extraction & Word native footnote insertion
 ├── image_utils.py       — Image download (URL/local), resize, SVG dimension parsing
 ├── syntax.py            — Code syntax highlighting via Pygments
@@ -35,6 +40,8 @@ Keywords in template docx define styles: 一级标题(h1), 二级标题(h2), 三
 ```bash
 md2word input.md -o output.docx                                           # basic
 md2word file1.md file2.md                                                 # batch
+md2word "docs/**/*.md"                                                    # glob input patterns
+md2word file1.md file2.md --out-dir ./output                              # output directory
 md2word input.md -t template/技术文档.docx -o out.docx                    # custom theme
 md2word --create-template my-template.docx --theme media                  # generate themed template
 md2word --validate-template my-template.docx                              # validate template
@@ -55,6 +62,19 @@ md2word input.md --project-dir /path/to/project                            # 项
 
 ## Config File
 Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.json` or `[tool.md2word]` in pyproject.toml. Also auto-detects `.md2word/template.docx` for project-level templates. CLI args override config. See `config.py` for details.
+
+## Features Added in v1.5.0
+- **Architecture refactor**: `converter.py` split into 6 modules (handlers, ooxml_helpers, metadata, context, frontmatter)
+- **ConversionContext**: replaces global state (_BOOKMARK_COUNTER, _HEADING_COUNTERS) — batch-safe
+- **Severity levels**: ConversionReport now supports info/warning/error/critical
+- **Strikethrough**: `~~text~~` → ~~text~~ in Word
+- **Highlight**: `==text==` → yellow highlight
+- **Super/Subscript**: `^sup^` / `~sub~` → superscript/subscript
+- **Task lists**: `- [x]` / `- [ ]` supported in nested lists
+- **YAML frontmatter**: title/author/date → docx core_properties; keywords/abstract support
+- **Cross-reference fix**: `[text](#heading-slug)` uses slug as bookmark name — REF fields work
+- **Out-dir**: `--out-dir DIR` for batch output to a directory
+- **Glob patterns**: `md2word "docs/**/*.md"` expands wildcards
 
 ## Features Added in v1.3.0
 - Red-head document: `--redhead AUTHORITY` generates 红头文件 with red authority name + separator + document number
@@ -85,13 +105,14 @@ Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.
 | media         | 自媒体排版         | 视觉系大字报+高行距+品牌橙色              |
 | redhead       | 红头文件           | GB/T 9704-2012 标准 + 红头样式            |
 
-## Converter v1.3.0 features
-- `_insert_redhead_header()` — injects red authority name + "文件" + red separator + doc number
-- `_set_page_number_format()` — centered PAGE field in footer
-- `_check_gb_compliance()` — validates margins against GB standards
-- `_file_hash()` / `_load_cache()` / `_save_cache()` — incremental conversion via MD5 hash
-- `ConversionReport` dataclass — structured error/warning/info tracking
-- `.md2word/` directory support in config search
+## Converter modules (v1.5.0+)
+- `convert()` in converter.py — orchestration pipeline
+- `handlers.py` — all `_handle_*` block processors + `_build_runs` / `_build_runs_skip`
+- `ooxml_helpers.py` — OOXML ops: bookmarks, REF/SEQ fields, SVG embed, numbering, TOC
+- `metadata.py` — `fix_ooxml_metadata()` / `check_gb_compliance()` / `insert_redhead_header()` / `set_page_number_format()` / `remove_guide_paragraphs()`
+- `context.py` — `ConversionContext` (replaces globals) + `ConversionReport` with severity
+- `frontmatter.py` — YAML frontmatter parsing and docx property application
+- `_file_hash()` / `_load_cache()` / `_save_cache()` — incremental conversion via MD5 hash (in converter.py)
 
 ## Known issues & fixes
 
@@ -99,12 +120,12 @@ Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.
 
 **Root cause**: python-docx embeds a built-in `docProps/thumbnail.jpeg` that is a blank/white image. When Windows finds a thumbnail inside the docx, it displays it instead of generating a preview from the document content.
 
-**Fix applied in `_fix_ooxml_metadata()`** (converter.py):
+**Fix applied in `fix_ooxml_metadata()`** (metadata.py):
 1. Strip `docProps/thumbnail.jpeg` from the ZIP during post-processing
 2. Remove the corresponding `<Relationship>` entry from `_rels/.rels` so the OPC stays valid
 3. Also fix the Application name from "Microsoft Macintosh Word" to "Microsoft Office Word"
 
-**If the white thumbnail reappears** — suspect that `_fix_ooxml_metadata()` is not being called (check the `convert()` function's epilogue), or that python-docx changed the default thumbnail relationship path. Verify by extracting ZIP entries and checking for `thumbnail` in filenames.
+**If the white thumbnail reappears** — suspect that `fix_ooxml_metadata()` is not being called (check the `convert()` function's epilogue), or that python-docx changed the default thumbnail relationship path. Verify by extracting ZIP entries and checking for `thumbnail` in filenames.
 
 ## Tool Doc Sync
 The global tool doc at `~/.claude/tools/md2word-tool.md` and the project copy `MD2WORD-TOOL.md` must be kept in sync. When adding CLI features, update both files.

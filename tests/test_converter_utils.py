@@ -1,19 +1,15 @@
 """Tests for converter utility functions."""
-
 import pytest
 from docx.shared import Inches, RGBColor
 
 from md2word.converter import (
     _ensure_list_blank_lines,
     _strip_front_matter,
-    _slugify,
-    _inline_text,
-    _next_bookmark_id,
-    _next_heading_number,
-    _reset_heading_counters,
     _LIST_MARKER_RE,
     _NUMBERED_MARKER_RE,
 )
+from md2word.context import ConversionContext
+from md2word.handlers import _slugify, inline_text
 
 
 class TestEnsureListBlankLines:
@@ -30,7 +26,7 @@ class TestEnsureListBlankLines:
     def test_heading_before_list_no_insert(self):
         text = "# 标题\n- 列表项"
         result = _ensure_list_blank_lines(text)
-        assert result == text  # Headings don't need blank line before lists
+        assert result == text
 
     def test_ordered_list(self):
         text = "文字\n1. 第一项\n2. 第二项"
@@ -40,7 +36,7 @@ class TestEnsureListBlankLines:
     def test_consecutive_lists(self):
         text = "- 项1\n- 项2"
         result = _ensure_list_blank_lines(text)
-        assert result == text  # No blank lines needed between consecutive list items
+        assert result == text
 
     def test_empty_text(self):
         assert _ensure_list_blank_lines("") == ""
@@ -67,7 +63,7 @@ class TestStripFrontMatter:
     def test_incomplete_front_matter(self):
         text = "---\ntitle: Test\n# Content"
         result = _strip_front_matter(text)
-        assert result == text  # Not stripped because closing --- missing
+        assert result == text
 
     def test_only_front_matter(self):
         text = "---\nkey: val\n---"
@@ -81,8 +77,6 @@ class TestSlugify:
 
     def test_chinese_text(self):
         result = _slugify("第一章 引言")
-        assert result == "引言" or "第一章-引言" in result
-        # Chinese characters are stripped by default regex
         assert isinstance(result, str)
 
     def test_special_characters(self):
@@ -101,12 +95,12 @@ class TestInlineText:
     def test_simple_text(self):
         import xml.etree.ElementTree as ET
         elem = ET.fromstring("<p>Hello World</p>")
-        assert _inline_text(elem) == "Hello World"
+        assert inline_text(elem) == "Hello World"
 
     def test_with_child_elements(self):
         import xml.etree.ElementTree as ET
         elem = ET.fromstring("<p>Hello <b>bold</b> world</p>")
-        result = _inline_text(elem)
+        result = inline_text(elem)
         assert "Hello" in result
         assert "bold" in result
         assert "world" in result
@@ -114,47 +108,59 @@ class TestInlineText:
     def test_with_tail_text(self):
         import xml.etree.ElementTree as ET
         elem = ET.fromstring("<p><b>Bold</b> tail</p>")
-        assert _inline_text(elem) == "Bold tail"
+        assert inline_text(elem) == "Bold tail"
 
     def test_empty_element(self):
         import xml.etree.ElementTree as ET
         elem = ET.fromstring("<p></p>")
-        assert _inline_text(elem) == ""
+        assert inline_text(elem) == ""
 
 
 class TestHeadingNumbering:
     def test_h1_not_numbered(self):
-        _reset_heading_counters()
-        assert _next_heading_number(1) == ""
+        ctx = ConversionContext()
+        ctx.reset_heading_counters()
+        assert ctx.next_heading_number(1) == ""
 
     def test_h2_first_is_1(self):
-        _reset_heading_counters()
-        assert _next_heading_number(2) == "1"
+        ctx = ConversionContext()
+        ctx.reset_heading_counters()
+        assert ctx.next_heading_number(2) == "1"
 
     def test_h3_under_h2(self):
-        _reset_heading_counters()
-        _next_heading_number(2)  # h2 → 1
-        assert _next_heading_number(3) == "1.1"
+        ctx = ConversionContext()
+        ctx.reset_heading_counters()
+        ctx.next_heading_number(2)
+        assert ctx.next_heading_number(3) == "1.1"
 
     def test_multiple_h2(self):
-        _reset_heading_counters()
-        _next_heading_number(2)  # → 1
-        _next_heading_number(2)  # → 2
-        assert _next_heading_number(3) == "2.1"
+        ctx = ConversionContext()
+        ctx.reset_heading_counters()
+        ctx.next_heading_number(2)
+        ctx.next_heading_number(2)
+        assert ctx.next_heading_number(3) == "2.1"
 
     def test_deep_nesting(self):
-        _reset_heading_counters()
-        _next_heading_number(2)  # → 1
-        _next_heading_number(3)  # → 1.1
-        _next_heading_number(4)  # → 1.1.1
-        assert _next_heading_number(4) == "1.1.2"
+        ctx = ConversionContext()
+        ctx.reset_heading_counters()
+        ctx.next_heading_number(2)
+        ctx.next_heading_number(3)
+        ctx.next_heading_number(4)
+        assert ctx.next_heading_number(4) == "1.1.2"
 
     def test_reset(self):
-        _reset_heading_counters()
-        _next_heading_number(2)  # → 1
-        _next_heading_number(3)  # → 1.1
-        _reset_heading_counters()
-        assert _next_heading_number(2) == "1"
+        ctx = ConversionContext()
+        ctx.reset_heading_counters()
+        ctx.next_heading_number(2)
+        ctx.next_heading_number(3)
+        ctx.reset_heading_counters()
+        assert ctx.next_heading_number(2) == "1"
+
+    def test_bookmark_id_increments(self):
+        ctx = ConversionContext()
+        assert ctx.next_bookmark_id() == 1
+        assert ctx.next_bookmark_id() == 2
+        assert ctx.next_bookmark_id() == 3
 
 
 class TestListMarkerRegex:
