@@ -4,12 +4,12 @@
 - Python 3.10+, python-docx, markdown, Pillow, requests, PyYAML
 - Optional: Pygments (highlight), matplotlib (math), resvg (SVG), watchdog (watch)
 - CLI entry via `md2word` command (registered system-wide)
-- v1.9.0: 251 tests, all passing
+- v1.9.1: 251 tests, all passing
 
 ## Structure
 ```
 src/md2word/
-├── __init__.py          — Version info (v1.9.0)
+├── __init__.py          — Version info (v1.9.1)
 ├── __main__.py          — python -m md2word entry
 ├── cli.py               — CLI: arg parsing, orchestration, config merge, watch mode
 ├── converter.py         — Orchestration: MD → HTML → docx pipeline (reduced)
@@ -33,7 +33,16 @@ src/md2word/
 ├── py.typed             — PEP 561 marker
 template/
 ├── 官方公文.docx, 学术论文.docx, 技术文档.docx, 自媒体排版.docx
-MD2WORD-TOOL.md          — Copy of global tool doc (sync with ~/.claude/tools/md2word-tool.md)
+skills/
+├── md2word/INDEX.md         — Agent tool docs (multi-module, read INDEX.md first)
+├── md2word/01-install.md
+├── md2word/02-commands.md
+├── md2word/03-themes.md
+├── md2word/04-template.md
+├── md2word/05-syntax.md
+├── md2word/06-config.md
+├── md2word/07-redhead.md
+├── md2word/08-version-history.md
 ```
 
 ## Template Guide Paragraphs
@@ -160,4 +169,22 @@ Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.
 **If the white thumbnail reappears** — suspect that `fix_ooxml_metadata()` is not being called (check the `convert()` function's epilogue), or that python-docx changed the default thumbnail relationship path. Verify by extracting ZIP entries and checking for `thumbnail` in filenames.
 
 ## Tool Doc Sync
-The global tool doc at `~/.claude/tools/md2word-tool.md` and the project copy `MD2WORD-TOOL.md` must be kept in sync. When adding CLI features, update both files.
+The global tool docs at `~/.claude/tools/md2word/` and the project copy `skills/md2word/` must be kept in sync. These are multi-module skill files — update all affected modules when adding features.
+
+## Maintenance Rules
+
+### Doc Sync (每次改完必须执行)
+After every code change that adds/modifies features, CLI flags, or behavior:
+
+1. **README 中英同步** — Update both `README.md` (Chinese) and `README-en.md` (English)
+2. **Tool docs** — Update affected files in `skills/md2word/`, then sync to `~/.claude/tools/md2word/`. Files contain agent-use skill docs with installation paths — update paths if project location changed.
+3. **CLAUDE.md** — Keep version, structure, and feature listings current
+
+### Version Bumping
+- **小更新** (bug fix, minor tweak): bump patch — `+0.0.1` (e.g. 1.9.0 → 1.9.1)
+- **大更新** (new feature, breaking change, significant improvement): bump minor — `+0.1.0` (e.g. 1.9.0 → 1.10.0)
+
+Update version in:
+- `src/md2word/__init__.py` — `__version__`
+- `pyproject.toml` — `[project] version`
+- `CLAUDE.md` — version string in Technology + Structure sections

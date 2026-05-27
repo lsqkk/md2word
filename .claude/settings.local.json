@@ -78,7 +78,14 @@
       "Bash(md2word *)",
       "Bash(python3 *)",
       "Bash(git checkout *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(gh release *)",
+      "Bash(curl -s https://api.github.com/repos/lsqkk/md2word/releases/latest)",
+      "Bash(rm -rf \"C:\\\\Users\\\\hp\\\\.claude\\\\tools\\\\md2word\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\hp\\\\.claude\\\\tools\\\\md2word\")",
+      "Bash(cp \"D:\\\\git\\\\lsqkk\\\\md2word\\\\tools\\\\md2word\\\\INDEX.md\" \"C:\\\\Users\\\\hp\\\\.claude\\\\tools\\\\md2word\\\\INDEX.md\")",
+      "Bash(cp \"D:\\\\git\\\\lsqkk\\\\md2word\\\\tools\\\\md2word\\\\01-install.md\" \"C:\\\\Users\\\\hp\\\\.claude\\\\tools\\\\md2word\\\\01-install.md\")",
+      "Bash(cp \"D:\\\\git\\\\lsqkk\\\\md2word\\\\tools\\\\md2word\\\\02-commands.md\" \"C:\\\\Users\\\\hp\\\\.claude\\\\tools\\\\md2word\\\\02-commands.md\")"
     ]
   }
 }
