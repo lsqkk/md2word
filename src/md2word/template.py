@@ -149,6 +149,12 @@ _STYLE_KEYWORDS: dict[str, str] = {
     "ordered list": "number_list",
     "目录标题": "toc_title",
     "table of contents": "toc_title",
+    "摘要": "abstract",
+    "abstract": "abstract",
+    "关键词": "keywords",
+    "keywords": "keywords",
+    "参考文献": "references",
+    "references": "references",
 }
 
 

@@ -190,6 +190,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Generate red-head official document (红头文件) with authority name"
     )
     parser.add_argument(
+        "--redhead-year", type=int, default=None, metavar="YEAR",
+        help="Year for red-head document number (default: 2024)"
+    )
+    parser.add_argument(
+        "--redhead-number", type=str, default=None, metavar="NUM",
+        help="Document number for red-head (e.g. '12')"
+    )
+    parser.add_argument(
         "--page-number", type=str, default=None, metavar="FMT",
         help='Page number format, e.g. "-- %%d --" (default: none)'
     )
@@ -357,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Incremental cache ──────────────────────────────────────────────────
     if raw_args.incremental:
-        from .converter import _load_cache, _save_cache, _file_hash
+        from .cache import file_hash as _file_hash, load_cache as _load_cache, save_cache as _save_cache
         cache_path = (project_dir or Path.cwd()) / ".md2word_cache.json"
         _cache = _load_cache(cache_path)
     else:
@@ -376,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
         "three_line_table": raw_args.three_line_table or False,
         "footnotes_enabled": not (raw_args.no_footnotes or False),
         "redhead_authority": raw_args.redhead,
+        "redhead_year": raw_args.redhead_year,
+        "redhead_number": raw_args.redhead_number,
         "page_number_fmt": raw_args.page_number,
         "gb_check": raw_args.gb_check or False,
     }

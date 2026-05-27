@@ -72,6 +72,9 @@ md2word --list-themes
 # 一键生成红头文件（发文机关名 + "文件" + 红色分隔线 + 文号）
 md2word 通知.md --redhead "XX市人民政府" --theme redhead
 
+# 自定义文号年份和编号
+md2word 通知.md --redhead "XX市人民政府" --redhead-year 2026 --redhead-number 12
+
 # 自动行为：TOC 默认关闭、正文首行缩进、标题方正小标宋 26pt
 # 如需强制开启目录，追加 --toc
 ```
@@ -420,7 +423,20 @@ watch: false
 
 ## 版本历史
 
-### v1.5.0（当前）
+### v1.6.0（当前）
+- **abstract/keywords 渲染管道完成**：frontmatter 的 abstract/keywords 现在会插入到文档中，使用模板中的"摘要"/"关键词"样式槽位
+- **书签冲突修复**：相同标题文本的书签名自动追加 `-1`、`-2` 后缀，避免 Word 报"书签名称重复"错误
+- **`_push_detect` 重构**：提取 `_detect_task_prefix()` 函数消除重复逻辑
+- **`build_runs`/`build_runs_skip` 合并**：提取 `_build_inline_runs_core()` 核心函数，两个入口函数作为薄封装
+- **代码块空白修复**：`text.strip()` → `text.strip('\n')` 保留代码块内有意的前导/尾随空格
+- **`converter.py` 清理**：删除死代码 `_strip_front_matter()`，`_ensure_list_blank_lines` 迁移至 handlers.py，新增 `cache.py` 模块，`_STYLE_KEYWORDS` 无用 import 移除
+- **`style_map` 实现**：`style_map` 参数可覆盖默认样式槽名（如 `{"code": "CustomCode"}`）
+- **红头文号可配置**：新增 `--redhead-year` 和 `--redhead-number` 参数，`insert_redhead_header()` 支持自定义年份和编号
+- **模板识别增强**：`_STYLE_KEYWORDS` 新增"摘要"/"关键词"/"参考文献"及英文映射
+- **新增 61 个测试**：metadata.py、ooxml_helpers.py 全面覆盖，v1.6 特性集成测试
+- 测试总数：187 项，全部通过
+
+### v1.5.0
 - **架构重构**：`converter.py` 拆分为 6 个模块（`handlers.py`、`ooxml_helpers.py`、`metadata.py`、`context.py`、`frontmatter.py`）
 - **ConversionContext**：全局状态封装为数据类，批量转换安全可重入
 - **ConversionReport 增强**：增加 severity 级别（info/warning/error/critical）

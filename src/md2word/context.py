@@ -116,6 +116,9 @@ class ConversionContext:
     # Table counter
     table_counter: int = 0
 
+    # Track used bookmark slugs to avoid duplicates
+    used_bookmark_slugs: dict[str, int] = field(default_factory=dict)
+
     # Report
     report: ConversionReport = field(default_factory=ConversionReport)
 
@@ -127,6 +130,15 @@ class ConversionContext:
     def next_bookmark_id(self) -> int:
         self.bookmark_counter += 1
         return self.bookmark_counter
+
+    def unique_bookmark_slug(self, slug: str) -> str:
+        """Return a unique bookmark slug, appending ``-1``, ``-2`` if needed."""
+        if slug not in self.used_bookmark_slugs:
+            self.used_bookmark_slugs[slug] = 1
+            return slug
+        count = self.used_bookmark_slugs[slug]
+        self.used_bookmark_slugs[slug] = count + 1
+        return f"{slug}-{count}"
 
     # ── Heading numbering ───────────────────────────────────────────────
 

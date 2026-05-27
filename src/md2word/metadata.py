@@ -146,8 +146,19 @@ def remove_guide_paragraphs(doc: Document) -> None:
 # ── Red-head document header ────────────────────────────────────────────
 
 
-def insert_redhead_header(doc: Document, authority_name: str, styles: dict) -> None:
-    """Insert 红头文件 header elements at the document start."""
+def insert_redhead_header(
+    doc: Document, authority_name: str, styles: dict,
+    year: int = 2024, number: str = "",
+) -> None:
+    """Insert 红头文件 header elements at the document start.
+
+    Args:
+        doc: The document to modify.
+        authority_name: Issuing authority name (e.g. "XX市人民政府").
+        styles: Extracted template styles.
+        year: Year in the document number (e.g. 2026).
+        number: Document number string (e.g. "12").
+    """
     p_red = doc.add_paragraph()
     p_red.paragraph_format.alignment = 1
     p_red.paragraph_format.space_after = Pt(4)
@@ -173,10 +184,11 @@ def insert_redhead_header(doc: Document, authority_name: str, styles: dict) -> N
     p_line.paragraph_format.space_after = Pt(12)
     add_bottom_border(p_line, color="CC0000", sz="16")
 
+    doc_num = f"〔{year}〕{number}号" if number else f"〔{year}〕 号"
     p_num = doc.add_paragraph()
     p_num.paragraph_format.alignment = 1
     p_num.paragraph_format.space_after = Pt(12)
-    run3 = p_num.add_run("〔2024〕 号")
+    run3 = p_num.add_run(doc_num)
     run3.font.name = "FangSong"
     run3.font.size = Pt(16)
     set_run_font(run3, "FangSong", "FangSong")

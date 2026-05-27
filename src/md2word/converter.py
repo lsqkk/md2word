@@ -8,12 +8,11 @@ have been split into focused sub-modules:
 - ``metadata.py``: Post-processing, GB compliance, red-head, page numbers
 - ``context.py``: ConversionContext, ConversionReport with severity levels
 - ``frontmatter.py``: YAML front matter parsing and application
+- ``cache.py``: Incremental conversion cache
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from pathlib import Path
 
@@ -22,12 +21,16 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+from .cache import file_hash as _file_hash
+from .cache import load_cache as _load_cache
+from .cache import save_cache as _save_cache
 from .config import load_config as _load_config
 from .context import ConversionContext, ConversionReport
 from .footnotes import add_footnotes_to_document, extract_footnotes
 from .frontmatter import apply_front_matter, parse_front_matter
 from .handlers import (
     build_runs_skip,
+    ensure_list_blank_lines,
     handle_blockquote,
     handle_code_block,
     handle_heading,
@@ -51,73 +54,46 @@ from .metadata import (
     remove_guide_paragraphs,
     set_page_number_format,
 )
-from .template import extract_template_styles, _STYLE_KEYWORDS
+from .template import ParagraphFormat, extract_template_styles
 
 
 # ── Regex ────────────────────────────────────────────────────────────
 
 _FN_PLACEHOLDER_RE = re.compile(r"\x00FN_([^\x00]+)\x00")
 _FN_TAG_RE = re.compile(r'<fn\s+id="([^"]+)"\s*/>')
-_LIST_MARKER_RE = re.compile(r"^[\-\*\+] ")
-_NUMBERED_MARKER_RE = re.compile(r"^\d+[\.\)] ")
 
 
-# ── Markdown pre-processing ──────────────────────────────────────────
+# ── Helper: insert abstract / keywords from front matter ────────────────
 
 
-def _strip_front_matter(text: str) -> str:
-    """Remove YAML front matter (---…---) from the beginning of markdown."""
-    from .frontmatter import parse_front_matter
-    _, body = parse_front_matter(text)
-    return body
+def _insert_abstract_keywords(doc, front_matter, styles):
+    """Insert abstract and keywords from YAML front matter into the document."""
+    abstract = front_matter.get("abstract")
+    keywords = front_matter.get("keywords")
 
+    if abstract:
+        label_fmt = styles.get("abstract")
+        if label_fmt:
+            p = doc.add_paragraph()
+            label_fmt.apply_to_paragraph(p)
+            r = p.add_run("摘要")
+            label_fmt.apply_to_run(r)
+        p = doc.add_paragraph()
+        fmt = styles.get("body", ParagraphFormat())
+        fmt.apply_to_paragraph(p)
+        fmt.apply_to_run(p.add_run(abstract))
 
-def _ensure_list_blank_lines(text: str) -> str:
-    """Insert blank lines before list items when missing."""
-    lines = text.split("\n")
-    result: list[str] = []
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        is_list = bool(
-            _LIST_MARKER_RE.match(line) or _NUMBERED_MARKER_RE.match(line)
-        )
-        if is_list and i > 0:
-            prev = lines[i - 1].strip()
-            if (
-                prev
-                and not _LIST_MARKER_RE.match(lines[i - 1])
-                and not _NUMBERED_MARKER_RE.match(lines[i - 1])
-                and not prev.startswith("#")
-            ):
-                if result and result[-1] != "":
-                    result.append("")
-        result.append(line)
-    return "\n".join(result)
-
-
-# ── Incremental cache ────────────────────────────────────────────────
-
-
-def _file_hash(path: str | Path) -> str:
-    """Return MD5 hex digest of file content."""
-    h = hashlib.md5()
-    h.update(Path(path).read_bytes())
-    return h.hexdigest()
-
-
-def _load_cache(cache_path: str | Path) -> dict:
-    """Load incremental conversion cache."""
-    try:
-        return json.loads(Path(cache_path).read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _save_cache(cache_path: str | Path, cache: dict) -> None:
-    """Save incremental conversion cache."""
-    Path(cache_path).write_text(
-        json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    if keywords:
+        label_fmt = styles.get("keywords")
+        if label_fmt:
+            p = doc.add_paragraph()
+            label_fmt.apply_to_paragraph(p)
+            r = p.add_run("关键词")
+            label_fmt.apply_to_run(r)
+        p = doc.add_paragraph()
+        fmt = styles.get("body", ParagraphFormat())
+        fmt.apply_to_paragraph(p)
+        fmt.apply_to_run(p.add_run(keywords))
 
 
 # ── Main convert function ────────────────────────────────────────────
@@ -140,6 +116,8 @@ def convert(
     footnotes_enabled: bool = True,
     formula_numbering: bool = False,
     redhead_authority: str | None = None,
+    redhead_year: int | None = None,
+    redhead_number: str | None = None,
     page_number_fmt: str | None = None,
     gb_check: bool = False,
     style_map: dict[str, str] | None = None,
@@ -162,6 +140,8 @@ def convert(
         footnotes_enabled: Process footnote syntax [^id].
         formula_numbering: Add SEQ equation numbers to block math.
         redhead_authority: Issuing authority name for red-head document.
+        redhead_year: Year for red-head document number (default 2024).
+        redhead_number: Document number for red-head (default "").
         page_number_fmt: Page number format, e.g. "-- %d --".
         gb_check: Check formatting against GB standards.
         style_map: Optional mapping of element type → Word style name.
@@ -170,6 +150,12 @@ def convert(
     ctx.report = ConversionReport()
     ctx.styles = extract_template_styles(template_path)
     ctx.styles["_report"] = ctx.report
+
+    # Apply style_map: override slot styles with user-provided mappings
+    if style_map:
+        for slot, custom_slot in style_map.items():
+            if custom_slot in ctx.styles:
+                ctx.styles[slot] = ctx.styles[custom_slot]
 
     # ── Parse YAML front matter ────────────────────────────────────────
     front_matter, markdown_text = parse_front_matter(markdown_text)
@@ -189,7 +175,7 @@ def convert(
         math_exprs = []
 
     # ── Ensure list items have preceding blank lines ─────────────────
-    markdown_text = _ensure_list_blank_lines(markdown_text)
+    markdown_text = ensure_list_blank_lines(markdown_text)
 
     # ── Markdown → HTML ────────────────────────────────────────────────
     html = markdown.markdown(
@@ -229,9 +215,14 @@ def convert(
         p = doc.paragraphs[0]._p
         p.getparent().remove(p)
 
+    # ── Abstract / Keywords from front matter ──────────────────────────
+    _insert_abstract_keywords(doc, front_matter, ctx.styles)
+
     # ── Red-head header (insert at very beginning) ──────────────────────
     if redhead_authority:
-        insert_redhead_header(doc, redhead_authority, ctx.styles)
+        insert_redhead_header(doc, redhead_authority, ctx.styles,
+                               year=redhead_year or 2024,
+                               number=redhead_number or "")
 
     # ── Page number format ─────────────────────────────────────────────
     if page_number_fmt:

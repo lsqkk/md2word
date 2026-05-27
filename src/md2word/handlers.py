@@ -47,6 +47,12 @@ from .syntax import extract_language, highlight
 from .template import ParagraphFormat, _STYLE_KEYWORDS, set_run_font
 
 
+# ── List marker regexes (used by ensure_list_blank_lines) ─────────────────
+
+_LIST_MARKER_RE = re.compile(r"^[\-\*\+] ")
+_NUMBERED_MARKER_RE = re.compile(r"^\d+[\.\)] ")
+
+
 # ── HTML pre-processing ────────────────────────────────────────────────
 
 
@@ -110,6 +116,32 @@ def preprocess_extended_syntax(text: str) -> str:
     for pattern, replacement in _EXTRA_SYNTAX_PREPROC:
         text = pattern.sub(replacement, text)
     return text
+
+
+# ── List blank line insertion ────────────────────────────────────────────
+
+
+def ensure_list_blank_lines(text: str) -> str:
+    """Insert blank lines before list items when missing."""
+    lines = text.split("\n")
+    result: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        is_list = bool(
+            _LIST_MARKER_RE.match(line) or _NUMBERED_MARKER_RE.match(line)
+        )
+        if is_list and i > 0:
+            prev = lines[i - 1].strip()
+            if (
+                prev
+                and not _LIST_MARKER_RE.match(lines[i - 1])
+                and not _NUMBERED_MARKER_RE.match(lines[i - 1])
+                and not prev.startswith("#")
+            ):
+                if result and result[-1] != "":
+                    result.append("")
+        result.append(line)
+    return "\n".join(result)
 
 
 # ── Math post-processing ───────────────────────────────────────────────
@@ -197,16 +229,28 @@ def push_text_with_footnotes(
                 push_run(p, f"[{part}]", base_fmt, **overrides)
 
 
+def _detect_task_prefix(text: str) -> tuple[str, str | None]:
+    """Detect task list checkbox prefix.
+
+    Returns ``(remaining_text, checkbox_char)`` where *checkbox_char* is
+    ``"☑ "`` for checked, ``"☐ "`` for unchecked, or ``None`` if no marker.
+    """
+    if text.startswith("[x] ") or text.startswith("[X] "):
+        return text[4:], "☑ "
+    elif text.startswith("[ ] "):
+        return text[4:], "☐ "
+    return text, None
+
+
 def _push_detect(p, text: str, base_fmt: ParagraphFormat, **overrides):
     """Push text, detecting checkboxes and task list markers."""
     if not text:
         return
-    if text.startswith("[x] ") or text.startswith("[X] "):
-        push_run(p, "☑ ", base_fmt, color=RGBColor(0x2E, 0x7D, 0x32))
-        text = text[4:]
-    elif text.startswith("[ ] "):
-        push_run(p, "☐ ", base_fmt, color=RGBColor(0x99, 0x99, 0x99))
-        text = text[4:]
+    remaining, checkbox = _detect_task_prefix(text)
+    if checkbox:
+        push_run(p, checkbox, base_fmt, color=RGBColor(0x2E, 0x7D, 0x32)
+                 if checkbox == "☑ " else RGBColor(0x99, 0x99, 0x99))
+        text = remaining
     push_run(p, text, base_fmt, **overrides)
 
 
@@ -215,12 +259,11 @@ def _make_push_detect(p, base_fmt):
     def _fn(text: str, **overrides):
         if not text:
             return
-        if text.startswith("[x] ") or text.startswith("[X] "):
-            push_run(p, "☑ ", base_fmt, color=RGBColor(0x2E, 0x7D, 0x32))
-            text = text[4:]
-        elif text.startswith("[ ] "):
-            push_run(p, "☐ ", base_fmt, color=RGBColor(0x99, 0x99, 0x99))
-            text = text[4:]
+        remaining, checkbox = _detect_task_prefix(text)
+        if checkbox:
+            push_run(p, checkbox, base_fmt, color=RGBColor(0x2E, 0x7D, 0x32)
+                     if checkbox == "☑ " else RGBColor(0x99, 0x99, 0x99))
+            text = remaining
         push_run(p, text, base_fmt, **overrides)
     return _fn
 
@@ -228,15 +271,20 @@ def _make_push_detect(p, base_fmt):
 # ── Build runs ─────────────────────────────────────────────────────────
 
 
-def build_runs(
-    doc: Document,
-    p,
-    elem: ET.Element,
+def _build_inline_runs_core(
+    doc: Document, p, elem: ET.Element,
     base_fmt: ParagraphFormat,
     fn_map: dict[str, int] | None = None,
+    skip_tags: set[str] | None = None,
+    enable_footnotes: bool = True,
+    enable_cross_ref: bool = True,
 ) -> None:
-    """Populate a docx paragraph with runs reflecting inline HTML tags."""
-    _fn_map = fn_map or {}
+    """Core inline run builder — handles strong, em, code, a, fn, img, del, mark, sup, sub.
+
+    *skip_tags*: child tags to skip (only tail text captured — for nested lists).
+    *enable_footnotes*: process ``<fn>`` tags.
+    *enable_cross_ref*: ``[text](#anchor)`` → REF field (else plain hyperlink).
+    """
     _pd = _make_push_detect(p, base_fmt)
 
     if elem.text:
@@ -246,7 +294,13 @@ def build_runs(
         tag = child.tag
         if tag == "br":
             continue
-        elif tag in ("strong", "b"):
+
+        if skip_tags and tag in skip_tags:
+            if child.tail:
+                _pd(child.tail)
+            continue
+
+        if tag in ("strong", "b"):
             _pd(child.text or "", bold=True)
         elif tag in ("em", "i"):
             _pd(child.text or "", italic=True)
@@ -255,16 +309,16 @@ def build_runs(
         elif tag == "a":
             href = child.get("href", "")
             txt = child.text or href
-            if href.startswith("#"):
+            if enable_cross_ref and href.startswith("#"):
                 target = href[1:]
                 for ref_run in make_ref_field(txt, target):
                     p._p.append(ref_run)
             else:
                 _pd(txt, underline=True, color=RGBColor(0x00, 0x52, 0xCC))
-        elif tag == "fn":
+        elif tag == "fn" and enable_footnotes and fn_map:
             fn_id_attr = child.get("id", "")
-            if _fn_map and fn_id_attr in _fn_map:
-                p._p.append(create_footnote_reference_run(None, _fn_map[fn_id_attr]))
+            if fn_id_attr in fn_map:
+                p._p.append(create_footnote_reference_run(None, fn_map[fn_id_attr]))
         elif tag == "img":
             _build_runs_img_inline(doc, p, child, base_fmt)
         elif tag == "del":
@@ -280,6 +334,18 @@ def build_runs(
 
         if child.tail:
             _pd(child.tail)
+
+
+def build_runs(
+    doc: Document,
+    p,
+    elem: ET.Element,
+    base_fmt: ParagraphFormat,
+    fn_map: dict[str, int] | None = None,
+) -> None:
+    """Populate a docx paragraph with runs reflecting inline HTML tags."""
+    _build_inline_runs_core(doc, p, elem, base_fmt, fn_map=fn_map,
+                            enable_footnotes=True, enable_cross_ref=True)
 
 
 def _build_runs_img_inline(doc, p, child, base_fmt):
@@ -350,45 +416,10 @@ def split_by_br(elem: ET.Element) -> list[tuple[str, ET.Element | None]]:
 
 
 def build_runs_skip(doc, p, elem, base_fmt, skip_tags=None):
-    """Like build_runs but skips child tags in *skip_tags* and detects task markers."""
-    _pd = _make_push_detect(p, base_fmt)
-
-    def _inner(e):
-        text_parts = []
-        if e.text:
-            text_parts.append(e.text)
-        for child in e:
-            if skip_tags and child.tag in skip_tags:
-                if child.tail:
-                    text_parts.append(child.tail)
-                continue
-            if child.tag in ("strong", "b"):
-                _pd(child.text or "", bold=True)
-            elif child.tag in ("em", "i"):
-                _pd(child.text or "", italic=True)
-            elif child.tag == "code":
-                _pd(child.text or "", name="DengXian")
-            elif child.tag == "a":
-                txt = child.text or child.get("href", "")
-                _pd(txt, underline=True, color=RGBColor(0x00, 0x52, 0xCC))
-            elif child.tag == "img":
-                _build_runs_img_inline(doc, p, child, base_fmt)
-            elif child.tag == "del":
-                _pd(child.text or "", strikethrough=True)
-            elif child.tag == "mark":
-                _pd(child.text or "", highlight_color=7)
-            elif child.tag == "sup":
-                _pd(child.text or "", superscript=True)
-            elif child.tag == "sub":
-                _pd(child.text or "", subscript=True)
-            else:
-                _pd(child.text or "")
-            if child.tail:
-                text_parts.append(child.tail)
-        return "".join(text_parts)
-    text = _inner(elem)
-    if text:
-        _pd(text)
+    """Like build_runs but skips child tags in *skip_tags* (for nested lists)."""
+    _build_inline_runs_core(doc, p, elem, base_fmt,
+                            skip_tags=set(skip_tags) if skip_tags else None,
+                            enable_footnotes=False, enable_cross_ref=False)
 
 
 # ── Footnote placeholder ───────────────────────────────────────────────
@@ -460,7 +491,7 @@ def handle_heading(
     heading_text = inline_text(elem)
     if heading_text:
         slug = _slugify(heading_text)
-        # Use the slugified text as the bookmark name (not _Ref{N})
+        slug = ctx.unique_bookmark_slug(slug)
         add_bookmark(p, ctx, name=slug)
 
 
@@ -610,7 +641,7 @@ def handle_code_block(
     if highlight_enabled and lang != "mermaid":
         tokens = highlight(text, lang)
 
-    for line in text.strip().split('\n'):
+    for line in text.strip('\n').split('\n'):
         p = doc.add_paragraph()
         fmt.apply_to_paragraph(p)
         if not line:
