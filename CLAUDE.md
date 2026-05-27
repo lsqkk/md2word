@@ -4,12 +4,12 @@
 - Python 3.10+, python-docx, markdown, Pillow, requests, PyYAML
 - Optional: Pygments (highlight), matplotlib (math), resvg (SVG), watchdog (watch)
 - CLI entry via `md2word` command (registered system-wide)
-- v1.8.0: 226 tests, all passing
+- v1.9.0: 251 tests, all passing
 
 ## Structure
 ```
 src/md2word/
-├── __init__.py          — Version info (v1.8.0)
+├── __init__.py          — Version info (v1.9.0)
 ├── __main__.py          — python -m md2word entry
 ├── cli.py               — CLI: arg parsing, orchestration, config merge, watch mode
 ├── converter.py         — Orchestration: MD → HTML → docx pipeline (reduced)
@@ -29,6 +29,7 @@ src/md2word/
 ├── math_renderer.py     — LaTeX → SVG rendering via matplotlib (fallback)
 ├── mermaid_renderer.py  — Mermaid → SVG via API or mmdc CLI
 ├── options.py           — ConvertOptions dataclass (convert() configuration)
+├── update_check.py      — GitHub version update check with local caching
 ├── py.typed             — PEP 561 marker
 template/
 ├── 官方公文.docx, 学术论文.docx, 技术文档.docx, 自媒体排版.docx
@@ -51,6 +52,7 @@ md2word --list-themes                                                     # show
 md2word --list-styles -t template/学术论文.docx                           # show detected styles
 md2word input.md --toc --toc-depth 1-3 --number-headings --page-break     # full features
 md2word input.md --no-highlight --no-math --no-mermaid                    # disable optional features
+md2word input.md --no-update-check                                       # disable version update check
 md2word input.md --three-line-table                                       # academic table style
 md2word input.md --watch                                                  # auto-convert on change
 md2word input.md --config md2word.yaml                                    # explicit config file
@@ -65,6 +67,12 @@ md2word input.md --project-dir /path/to/project                            # 项
 
 ## Config File
 Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.json` or `[tool.md2word]` in pyproject.toml. Also auto-detects `.md2word/template.docx` for project-level templates. CLI args override config. See `config.py` for details.
+
+## Features Added in v1.9.0
+- **Version update check**: After successful conversion, silently checks GitHub for newer releases. Results cached locally for 24h to avoid API rate limits.
+- **CLI**: `--no-update-check` disables the check. Config equivalent: `update-check: false` in `md2word.yaml`.
+- **New module**: `update_check.py` — `check_for_update()` / `fetch_latest_version()` / `format_update_message()`
+- **25 new tests**: version comparison, cache, format, edge cases
 
 ## Features Added in v1.8.0
 - **ConvertOptions dataclass**: `convert()` now accepts a single `ConvertOptions` object instead of 14+ keyword arguments — cleaner API with documented defaults
@@ -136,6 +144,7 @@ Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.
 - `context.py` — `ConversionContext` (replaces globals, now includes `used_bookmark_slugs`) + `ConversionReport` with severity
 - `frontmatter.py` — YAML frontmatter parsing and docx property application
 - `cache.py` — `file_hash()` / `load_cache()` / `save_cache()` — incremental conversion via MD5 hash
+- `update_check.py` — `check_for_update()` / `fetch_latest_version()` / `format_update_message()` — version update check
 
 ## Known issues & fixes
 

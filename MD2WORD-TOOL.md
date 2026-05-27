@@ -94,6 +94,7 @@ md2word input.md --no-footnotes              # 禁用脚注处理
 md2word input.md --no-highlight              # 禁用代码高亮
 md2word input.md --no-math                   # 禁用公式渲染
 md2word input.md --no-mermaid                # 禁用 Mermaid 图表
+md2word input.md --no-update-check           # 禁用 GitHub 版本更新检查
 ```
 
 ### 配置文件
@@ -382,6 +383,9 @@ project-dir: /path/to/project
 
 # Watch 模式
 watch: false
+
+# 版本更新检查（默认开启）
+update-check: true
 ```
 
 ---
@@ -423,7 +427,11 @@ watch: false
 
 ## 版本历史
 
-### v1.6.0（当前）
+### v1.9.0（当前）
+- **版本更新检查**：转换成功后自动检查 GitHub 新版本，24h 缓存免限速
+- **CLI 新增 `--no-update-check`**：禁用版本检查
+- **配置支持**：`md2word.yaml` 中添加 `update-check: false` 禁用它
+- 新增模块 `update_check.py`，25 个新测试
 - **abstract/keywords 渲染管道完成**：frontmatter 的 abstract/keywords 现在会插入到文档中，使用模板中的"摘要"/"关键词"样式槽位
 - **书签冲突修复**：相同标题文本的书签名自动追加 `-1`、`-2` 后缀，避免 Word 报"书签名称重复"错误
 - **`_push_detect` 重构**：提取 `_detect_task_prefix()` 函数消除重复逻辑

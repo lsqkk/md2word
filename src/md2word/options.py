@@ -72,6 +72,10 @@ class ConvertOptions:
     style_map: dict[str, str] | None = None
     """Optional mapping of element type → Word style name override."""
 
+    # ── Update check ────────────────────────────────────────────────────
+    update_check: bool = True
+    """Check GitHub for newer versions after successful conversion."""
+
     # ── Diagnostics ──────────────────────────────────────────────────────
     verbose: bool = False
     """Emit detailed progress to stderr."""

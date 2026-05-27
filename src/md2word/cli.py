@@ -13,6 +13,7 @@ from .converter import convert
 from .options import ConvertOptions
 from .template import list_template_styles, validate_template
 from .themes import build_theme, get_theme, list_themes as _list_themes
+from .update_check import check_for_update, format_update_message
 
 
 def _check_deps() -> dict[str, bool]:
@@ -215,6 +216,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Project root directory for .md2word/ config and templates"
     )
     parser.add_argument(
+        "--no-update-check", action="store_true", default=None,
+        help="Skip checking for newer versions on GitHub"
+    )
+    parser.add_argument(
         "--verbose", action="store_true", default=None,
         help="Show detailed progress information"
     )
@@ -390,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         "redhead_number": raw_args.redhead_number,
         "page_number_fmt": raw_args.page_number,
         "gb_check": raw_args.gb_check or False,
+        "update_check": not (raw_args.no_update_check or False),
         "verbose": raw_args.verbose or False,
     }
     options = ConvertOptions.from_cli_args(explicit_args, cfg)
@@ -443,6 +449,9 @@ def main(argv: list[str] | None = None) -> int:
                 _cache[str(in_path)] = current_hash
                 _save_cache(cache_path, _cache)
 
+            if report is not None and not report.has_errors():
+                _show_update_notice(options)
+
         return 0 if ok else 1
 
     # ── Stdin ──────────────────────────────────────────────────────────────
@@ -456,6 +465,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  模板: {tpl}")
     print(f"  输出: {out_path}")
     report = convert(md_text, tpl, out_path, **conv_kwargs)
+    if report is not None and not report.has_errors():
+        _show_update_notice(options)
     return 1 if report and report.has_errors() else 0
 
 
@@ -588,6 +599,17 @@ def _watch_polling(
                 time.sleep(2)
     except KeyboardInterrupt:
         print("  监听已停止。")
+
+
+def _show_update_notice(options: ConvertOptions) -> None:
+    """Print update notice if a newer version is available on GitHub."""
+    if not options.update_check:
+        return
+    info = check_for_update(__version__)
+    msg = format_update_message(info, __version__)
+    if msg:
+        print()
+        print(msg)
 
 
 def _convert_if_md(
