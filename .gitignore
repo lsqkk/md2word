@@ -16,6 +16,10 @@ venv/
 .env
 .env.local
 
+# Agent / AI
+.claude/
+CLAUDE.md
+
 # Project specific
 test-output.docx
 *.docx
