@@ -1,4 +1,10 @@
-"""Configuration file support — md2word.yaml / md2word.json / pyproject.toml."""
+"""Configuration file support — md2word.yaml / md2word.json / pyproject.toml.
+
+Supports YAML (primary, via PyYAML), JSON, and TOML (pyproject.toml)
+config formats.  PyYAML is preferred for nested structures like
+``style_map``; a minimal fallback parser handles simple key-value
+configs when PyYAML is not available.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .options import ConvertOptions
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 _TRUE_VALUES = {"1", "yes", "true", "on", "y", "t"}
@@ -16,6 +24,32 @@ _TRUE_VALUES = {"1", "yes", "true", "on", "y", "t"}
 
 def _to_bool(v: str) -> bool:
     return v.strip().lower() in _TRUE_VALUES
+
+
+# ── PyYAML wrapper ───────────────────────────────────────────────────────────
+
+_HAS_PYYAML = False
+try:
+    import yaml as _yaml  # type: ignore[import-untyped]
+    _HAS_PYYAML = True
+except ImportError:
+    pass
+
+
+def _yaml_load(text: str) -> dict[str, Any] | None:
+    """Try to parse *text* with PyYAML; return ``None`` if unavailable."""
+    if not _HAS_PYYAML:
+        return None
+    try:
+        data = _yaml.safe_load(text)
+        if isinstance(data, dict):
+            return {k.replace("-", "_"): v for k, v in data.items()}
+        return {}
+    except Exception:
+        return None
+
+
+# ── Minimal fallback YAML parser (flat key-value only) ───────────────────
 
 
 def _parse_yaml_line(line: str) -> tuple[str, Any] | None:
@@ -43,29 +77,19 @@ def _parse_yaml_line(line: str) -> tuple[str, Any] | None:
     return key, raw.strip("\"'")
 
 
-def _parse_yaml_map_section(lines: list[str], start_idx: int) -> tuple[dict[str, str], int]:
-    """Parse a YAML mapping section (indented key: value pairs).
-
-    Returns (parsed_dict, next_line_index).
-    """
-    result: dict[str, str] = {}
-    i = start_idx
+def _load_yaml_text_fallback(text: str) -> dict[str, Any]:
+    """Minimal YAML key-value parser (no PyYAML needed)."""
+    cfg: dict[str, Any] = {}
+    lines = text.splitlines()
+    i = 0
     while i < len(lines):
         line = lines[i]
-        stripped = line.rstrip()
-        if not stripped or stripped.startswith("#"):
-            i += 1
-            continue
-        # Check indentation level — a non-indented key ends the map
-        if not line.startswith(" ") and not line.startswith("\t"):
-            break
-        m = re.match(r"^\s+(\w[\w-]*)\s*:\s*(.*?)\s*$", stripped)
-        if m:
-            key = m.group(1).replace("-", "_")
-            val = m.group(2).strip("\"'")
-            result[key] = val
+        parsed = _parse_yaml_line(line)
+        if parsed:
+            key, val = parsed
+            cfg[key] = val
         i += 1
-    return result, i
+    return cfg
 
 
 # ── search path ──────────────────────────────────────────────────────────────
@@ -101,27 +125,13 @@ def find_config(start: Path | None = None) -> Path | None:
 # ── loaders ──────────────────────────────────────────────────────────────────
 
 
-def _load_yaml_text(text: str) -> dict[str, Any]:
-    """Minimal YAML key-value parser (no PyYAML needed)."""
-    cfg: dict[str, Any] = {}
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        parsed = _parse_yaml_line(line)
-        if parsed:
-            key, val = parsed
-            cfg[key] = val
-            # Check if value contains nested mapping (style-map)
-            if val is not None and isinstance(val, str) and val.strip() == "":
-                # This might be a mapping key — peek ahead
-                pass
-        i += 1
-    return cfg
-
-
 def _load_yaml(path: Path) -> dict[str, Any]:
-    return _load_yaml_text(path.read_text(encoding="utf-8"))
+    """Load a YAML file, trying PyYAML first, then the fallback parser."""
+    text = path.read_text(encoding="utf-8")
+    result = _yaml_load(text)
+    if result is not None:
+        return _normalize_yaml(result)
+    return _load_yaml_text_fallback(text)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -163,14 +173,38 @@ def _load_pyproject(path: Path) -> dict[str, Any]:
     return cfg
 
 
+def _normalize_yaml(data: dict) -> dict[str, Any]:
+    """Normalize YAML-loaded dict: convert list values, fix key naming."""
+    result: dict[str, Any] = {}
+    for k, v in data.items():
+        key = k.replace("-", "_")
+        if isinstance(v, list):
+            # e.g. style_map might be passed as a list of pairs, but
+            # dict is preferred — store as-is for the consumer to handle
+            result[key] = v
+        elif isinstance(v, dict):
+            result[key] = v
+        elif isinstance(v, str):
+            result[key] = v
+        elif isinstance(v, bool):
+            result[key] = v
+        elif isinstance(v, (int, float)):
+            result[key] = v
+        elif v is None:
+            result[key] = None
+    return result
+
+
 # ── public API ───────────────────────────────────────────────────────────────
 
 
-def load_config(start: Path | None = None) -> dict[str, Any]:
+def load_config(start: Path | None = None, validate: bool = True) -> dict[str, Any]:
     """Load configuration from the nearest config file.
 
     Returns a flat dict with keys matching CLI argument names (underscored).
     Returns an empty dict if no config file exists.
+
+    When *validate* is ``True`` (default), unknown keys emit a warning.
     """
     path = find_config(start)
     if path is None:
@@ -193,19 +227,40 @@ def load_config(start: Path | None = None) -> dict[str, Any]:
     elif path.name == "pyproject.toml":
         cfg["_project_dir"] = str(path.parent.resolve())
 
+    # Normalise boolean string values
     _BOOLEAN_KEYS: set[str] = {
         "toc", "number_headings", "page_break",
         "highlight", "math", "mermaid", "no_highlight",
         "no_math", "no_mermaid",
     }
-
     for k, v in list(cfg.items()):
         if k in _BOOLEAN_KEYS and isinstance(v, str):
             cfg[k] = _to_bool(v)
         if k == "theme" and isinstance(v, str):
             cfg["_theme_hint"] = v
 
+    # Validate config keys against ConvertOptions fields
+    if validate:
+        _validate_config_keys(cfg, path)
+
     return cfg
+
+
+def _validate_config_keys(cfg: dict[str, Any], path: Path) -> None:
+    """Warn about unknown config keys."""
+    valid_keys = set(ConvertOptions.__dataclass_fields__)
+    valid_keys.update({
+        "_project_dir", "_theme_hint", "output", "template",
+        "out_dir", "image_width", "no_toc", "no_highlight", "no_math",
+        "no_mermaid", "no_footnotes", "page_break", "redhead",
+        "page_number", "incremental", "project_dir", "config",
+        "theme", "watch",
+    })
+    for k in cfg:
+        if k.startswith("_"):
+            continue
+        if k not in valid_keys:
+            print(f"  [WARN] 未知配置键 '{k}' 在 {path}", file=sys.stderr)
 
 
 def merge_with_args(

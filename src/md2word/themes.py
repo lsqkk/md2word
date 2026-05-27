@@ -1,11 +1,28 @@
 """Theme specifications for template generation — data-driven, zero boilerplate."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from .template import set_run_font
+from .template import _inject_slot_marker, set_run_font
+
+_SLOT_NAMES: dict[str, str] = {
+    "一级标题": "h1",
+    "二级标题": "h2",
+    "三级标题": "h3",
+    "正文": "body",
+    "首行缩进": "body_indent",
+    "图片": "image",
+    "图注": "figcaption",
+    "引用": "quote",
+    "代码": "code",
+    "无序列表": "bullet_list",
+    "有序列表": "number_list",
+    "目录标题": "toc_title",
+    "摘要": "abstract",
+    "关键词": "keywords",
+    "参考文献": "references",
+}
 
 
 @dataclass
@@ -262,7 +279,7 @@ def list_themes() -> list[tuple[str, ThemeSpec]]:
 
 
 def build_theme(spec: ThemeSpec, output_path: Path) -> None:
-    """Build a template docx from a theme spec."""
+    """Build a template docx from a theme spec, injecting slot markers."""
     from docx import Document
     from docx.shared import Cm, Pt, RGBColor
 
@@ -272,8 +289,7 @@ def build_theme(spec: ThemeSpec, output_path: Path) -> None:
     s.bottom_margin = Cm(spec.margins_cm[1])
     s.left_margin = Cm(spec.margins_cm[2])
     s.right_margin = Cm(spec.margins_cm[3])
-    # Prevent blank first page from NEW_PAGE section start type
-    s.start_type = 0  # WD_SECTION_START.CONTINUOUS
+    s.start_type = 0
 
     for ps in spec.paragraphs:
         p = doc.add_paragraph()
@@ -297,5 +313,10 @@ def build_theme(spec: ThemeSpec, output_path: Path) -> None:
             p.paragraph_format.space_after = Pt(ps.space_after_pt)
         if ps.line_spacing is not None:
             p.paragraph_format.line_spacing = ps.line_spacing
+
+        # Inject machine-readable slot marker
+        slot = _SLOT_NAMES.get(ps.label)
+        if slot:
+            _inject_slot_marker(p, slot)
 
     doc.save(str(output_path))

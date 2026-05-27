@@ -1,15 +1,15 @@
 # md2word — Markdown to Word Converter
 
 ## Technology
-- Python 3.10+, python-docx, markdown, Pillow, requests
+- Python 3.10+, python-docx, markdown, Pillow, requests, PyYAML
 - Optional: Pygments (highlight), matplotlib (math), resvg (SVG), watchdog (watch)
 - CLI entry via `md2word` command (registered system-wide)
-- v1.6.0: 187 tests, all passing
+- v1.8.0: 226 tests, all passing
 
 ## Structure
 ```
 src/md2word/
-├── __init__.py          — Version info (v1.6.0)
+├── __init__.py          — Version info (v1.8.0)
 ├── __main__.py          — python -m md2word entry
 ├── cli.py               — CLI: arg parsing, orchestration, config merge, watch mode
 ├── converter.py         — Orchestration: MD → HTML → docx pipeline (reduced)
@@ -28,6 +28,7 @@ src/md2word/
 ├── math_omml.py         — LaTeX → Word OMML (native editable formulas)
 ├── math_renderer.py     — LaTeX → SVG rendering via matplotlib (fallback)
 ├── mermaid_renderer.py  — Mermaid → SVG via API or mmdc CLI
+├── options.py           — ConvertOptions dataclass (convert() configuration)
 ├── py.typed             — PEP 561 marker
 template/
 ├── 官方公文.docx, 学术论文.docx, 技术文档.docx, 自媒体排版.docx
@@ -64,6 +65,14 @@ md2word input.md --project-dir /path/to/project                            # 项
 
 ## Config File
 Auto-detects `.md2word/config.yaml` > `md2word.yaml` / `md2word.yml` / `md2word.json` or `[tool.md2word]` in pyproject.toml. Also auto-detects `.md2word/template.docx` for project-level templates. CLI args override config. See `config.py` for details.
+
+## Features Added in v1.8.0
+- **ConvertOptions dataclass**: `convert()` now accepts a single `ConvertOptions` object instead of 14+ keyword arguments — cleaner API with documented defaults
+- **Config system upgrade**: PyYAML is now a hard dependency — nested config (`style_map`, lists) supported in `md2word.yaml`. Unknown config keys emit warnings. Backward-compatible with flat configs via fallback parser.
+- **Template custom XML markers**: Generated templates inject machine-readable slot identifiers via `<w:customXml>`. `_guess_slot()` reads markers first, falls back to text matching — eliminates false positives from substring matching.
+- **Verbose mode**: `--verbose` now emits stage-by-stage progress during conversion (template, front matter, footnotes, math, blocks 1/N, etc.)
+- **Error context**: Block processing errors include inline text preview (first 80 chars) — easier to locate the source of conversion issues
+- **39 new tests**: 2450 total test lines, covering ConvertOptions, config validation, slot markers, verbose mode, error context
 
 ## Features Added in v1.6.0
 - **Abstract/keywords rendering**: frontmatter `abstract`/`keywords` now inserts styled paragraphs using template style slots (摘要/关键词)

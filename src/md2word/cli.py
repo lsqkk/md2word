@@ -10,6 +10,7 @@ from pathlib import Path
 from . import __version__
 from .config import load_config, merge_with_args
 from .converter import convert
+from .options import ConvertOptions
 from .template import list_template_styles, validate_template
 from .themes import build_theme, get_theme, list_themes as _list_themes
 
@@ -371,8 +372,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _cache = None
 
-    # ── Build conversion kwargs ────────────────────────────────────────────
-    conv_kwargs = {
+    # ── Build ConvertOptions ────────────────────────────────────────────
+    conv_kwargs = {}
+    explicit_args = {
         "image_max_width": raw_args.image_width or 5.5,
         "toc": use_toc,
         "toc_depth": raw_args.toc_depth or "1-3",
@@ -388,7 +390,10 @@ def main(argv: list[str] | None = None) -> int:
         "redhead_number": raw_args.redhead_number,
         "page_number_fmt": raw_args.page_number,
         "gb_check": raw_args.gb_check or False,
+        "verbose": raw_args.verbose or False,
     }
+    options = ConvertOptions.from_cli_args(explicit_args, cfg)
+    conv_kwargs = {"options": options}
 
     if raw_args.verbose:
         print("  详细模式: 已启用")

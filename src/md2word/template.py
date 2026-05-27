@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Emu, Pt, RGBColor
 
@@ -158,12 +158,66 @@ _STYLE_KEYWORDS: dict[str, str] = {
 }
 
 
-def _guess_slot(text: str) -> str | None:
+def _inject_slot_marker(p, slot: str) -> None:
+    """Embed a machine-readable slot identifier into a paragraph's XML.
+
+    Uses ``<w:customXml>`` with a unique element name so that downstream
+    ``_guess_slot`` can read it reliably instead of relying on fragile
+    text-substring matching.
+    """
+    from lxml import etree as _lxml_etree
+
+    try:
+        pPr = p._p.find(qn("w:pPr"))
+        if pPr is None:
+            pPr = OxmlElement("w:pPr")
+            p._p.insert(0, pPr)
+
+        custom_xml = (
+            f'<w:customXml xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+            f' w:element="md2word_slot" w:uri="urn:md2word">'
+            f'  <w:customXmlPr>'
+            f'    <w:attr w:name="slot" w:val="{slot}"/>'
+            f'  </w:customXmlPr>'
+            f'</w:customXml>'
+        )
+        pPr.append(parse_xml(custom_xml))
+    except Exception:
+        pass  # non-critical; text fallback still works
+
+
+def _read_slot_marker(p) -> str | None:
+    """Read the slot identifier from a paragraph's custom XML marker.
+
+    Returns the slot name (e.g. ``"h1"``) or ``None`` if no marker found.
+    """
+    try:
+        ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        custom_xmls = p._p.findall(f"{{{ns}}}pPr/{{{ns}}}customXml")
+        for cx in custom_xmls:
+            if cx.get(qn("w:element")) == "md2word_slot":
+                for attr_el in cx.iter():
+                    if attr_el.tag == f"{{{ns}}}attr" and attr_el.get(qn("w:name")) == "slot":
+                        return attr_el.get(qn("w:val"))
+    except Exception:
+        pass
+    return None
+
+
+def _guess_slot(text: str, p=None) -> str | None:
     """Match guide paragraph text to a style slot.
 
-    Strips whitespace and punctuation then does substring matching,
-    reducing false positives from incidental keyword inclusion.
+    Priority:
+    1. Custom XML marker injected by ``_inject_slot_marker`` (if *p* given)
+    2. Text-substring matching (backward-compatible fallback)
     """
+    # Try custom XML marker first
+    if p is not None:
+        marker = _read_slot_marker(p)
+        if marker:
+            return marker
+
+    # Fallback: text-substring matching
     import re
     normalised = re.sub(r"[^a-zA-Z0-9一-鿿]", "", text.lower().strip())
     for keyword in sorted(_STYLE_KEYWORDS, key=len, reverse=True):
@@ -181,7 +235,7 @@ def extract_template_styles(template_path: str | Path) -> dict[str, ParagraphFor
         text = p.text.strip()
         if not text:
             continue
-        slot = _guess_slot(text)
+        slot = _guess_slot(text, p=p)
         if slot and slot not in styles:
             styles[slot] = ParagraphFormat.from_docx_paragraph(p)
 
@@ -198,7 +252,7 @@ def validate_template(template_path: str | Path) -> dict[str, list[str]]:
         text = p.text.strip()
         if not text:
             continue
-        slot = _guess_slot(text)
+        slot = _guess_slot(text, p=p)
         if slot:
             found.add(slot)
 
@@ -219,7 +273,7 @@ def list_template_styles(template_path: str | Path) -> list[dict[str, Any]]:
         text = p.text.strip()
         if not text:
             continue
-        slot = _guess_slot(text)
+        slot = _guess_slot(text, p=p)
         if slot:
             fmt = ParagraphFormat.from_docx_paragraph(p)
             ea = fmt.east_asia_font or "(same)"
