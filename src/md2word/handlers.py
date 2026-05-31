@@ -479,6 +479,12 @@ def handle_heading(
     if page_break and level == 1:
         add_page_break(doc)
     p = doc.add_paragraph()
+    # Apply Word heading style so TOC \o can resolve it
+    style_name = f"Heading {level}"
+    try:
+        p.style = doc.styles[style_name]
+    except KeyError:
+        pass
     slot.apply_to_paragraph(p)
     if number_headings:
         num = ctx.next_heading_number(level)

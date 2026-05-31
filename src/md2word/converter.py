@@ -228,21 +228,13 @@ def convert(
     from .ooxml_helpers import add_toc as _add_toc
 
     _toc_pending = opts.toc
+    _toc_inserted = False
     check_blocks = list(blocks)
     if _toc_pending and not any(b.tag == "h1" for b in check_blocks):
         _vprint(f"插入目录 (深度: {opts.toc_depth})…")
         _add_toc(doc, ctx.styles, depth=opts.toc_depth)
         _toc_pending = False
-
-    _vprint("设置 Word 域自动更新…")
-    settings_el = doc.settings._element
-    up = settings_el.find(qn("w:updateFields"))
-    if up is None:
-        up = OxmlElement("w:updateFields")
-        up.set(qn("w:val"), "true")
-        settings_el.append(up)
-    else:
-        up.set(qn("w:val"), "true")
+        _toc_inserted = True
 
     if opts.number_headings:
         _vprint("启用标题自动编号…")
@@ -266,6 +258,7 @@ def convert(
                 if _toc_pending and tag == "h1":
                     _add_toc(doc, ctx.styles, depth=opts.toc_depth)
                     _toc_pending = False
+                    _toc_inserted = True
             elif tag == "p":
                 handle_paragraph(doc, block, ctx.styles, ctx,
                                  image_max_width=opts.image_max_width)
@@ -301,6 +294,9 @@ def convert(
         except Exception as e:
             context_preview = _inline_text_preview(block, 80)
             ctx.report.warn(f"处理 <{tag}> 块时出错 ({context_preview}): {e}")
+
+    if _toc_inserted:
+        _vprint("提示：目录需右键 → 更新域后生效")
 
     _vprint("保存文档…")
     doc.save(str(output_path))

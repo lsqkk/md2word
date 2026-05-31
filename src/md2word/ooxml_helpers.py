@@ -176,7 +176,7 @@ def add_toc(doc: Document, styles: dict, depth: str = "1-3") -> None:
 
     instr = OxmlElement("w:instrText")
     instr.set(qn("xml:space"), "preserve")
-    instr.text = f' TOC \\o "{depth}" \\h \\z \\u '
+    instr.text = f' TOC \\o "{depth}" \\z \\u '
     p._p.append(_mk_r(instr))
 
     separate = OxmlElement("w:fldChar")
@@ -185,7 +185,7 @@ def add_toc(doc: Document, styles: dict, depth: str = "1-3") -> None:
 
     p_ph = OxmlElement("w:r")
     t = OxmlElement("w:t")
-    t.text = "（更新域以生成目录，Ctrl+A → F9）"
+    t.text = "（右键此处 → 更新域）"
     p_ph.append(t)
     p._p.append(p_ph)
 
@@ -194,20 +194,37 @@ def add_toc(doc: Document, styles: dict, depth: str = "1-3") -> None:
     p._p.append(_mk_r(end))
 
 
-# ── SVG embedder ───────────────────────────────────────────────────────
+# ── Image embedder (SVG + raster) ────────────────────────────────────────
 
 
 def embed_svg_in_paragraph(
-    doc: Document, p, svg_data: bytes, alt: str = "",
+    doc: Document, p, img_data: bytes, alt: str = "",
     max_width_inches: float = 5.5,
 ) -> None:
-    """Embed SVG directly in *p* via OPC-level ``asvg:svgBlip``."""
-    size = get_svg_size(svg_data)
+    """Embed SVG or raster image in *p*. Auto-detects format from bytes.
+
+    For SVG: embeds via OPC-level ``asvg:svgBlip``.
+    For raster images (JPEG/PNG): embeds as standard image blip.
+    """
+    is_svg = _is_svg_data(img_data)
+
+    if is_svg:
+        size = get_svg_size(img_data)
+    else:
+        from PIL import Image as PILImage
+        from io import BytesIO
+        try:
+            pil_img = PILImage.open(BytesIO(img_data))
+            size = pil_img.size  # (width_px, height_px)
+        except Exception:
+            size = None
+
     if size is None:
         from .context import ParagraphFormat
         pf = ParagraphFormat()
-        _push_run_simple(p, f"[SVG: {alt}]", pf, italic=True)
+        _push_run_simple(p, f"[{alt}]", pf, italic=True)
         return
+
     w_px, h_px = size
 
     max_px = max_width_inches * 96
@@ -219,16 +236,44 @@ def embed_svg_in_paragraph(
     emu_w = w_px * 914400 // 96
     emu_h = h_px * 914400 // 96
 
-    partname = doc.part.package.next_partname("/word/media/image%d.svg")
-    svg_part = ImagePart(partname, "image/svg+xml", svg_data)
-    svg_part._package = doc.part.package
+    if is_svg:
+        partname = doc.part.package.next_partname("/word/media/image%d.svg")
+        mime = "image/svg+xml"
+    elif img_data[:4] == b'\x89PNG':
+        partname = doc.part.package.next_partname("/word/media/image%d.png")
+        mime = "image/png"
+    elif img_data[:2] == b'\xff\xd8':
+        partname = doc.part.package.next_partname("/word/media/image%d.jpg")
+        mime = "image/jpeg"
+    else:
+        partname = doc.part.package.next_partname("/word/media/image%d.png")
+        mime = "image/png"
+
+    img_part = ImagePart(partname, mime, img_data)
+    img_part._package = doc.part.package
 
     rId = doc.part.relate_to(
-        svg_part,
+        img_part,
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
     )
 
-    xml = (
+    if is_svg:
+        xml = _drawing_xml_svg(emu_w, emu_h, rId, alt)
+    else:
+        xml = _drawing_xml_raster(emu_w, emu_h, rId, alt)
+
+    run = p.add_run()
+    run._r.append(parse_xml(xml))
+
+
+def _is_svg_data(data: bytes) -> bool:
+    """Detect SVG data by checking for SVG/XML opening tag."""
+    return data[:4] == b'<svg' or data[:5] == b'<?xml'
+
+
+def _drawing_xml_svg(emu_w: int, emu_h: int, rId: str, alt: str) -> str:
+    """Build OOXML drawing element for SVG with asvg:svgBlip extension."""
+    return (
         f'<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
         f'  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
         f'  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
@@ -268,8 +313,43 @@ def embed_svg_in_paragraph(
         f'  </wp:inline>'
         f'</w:drawing>'
     )
-    run = p.add_run()
-    run._r.append(parse_xml(xml))
+
+
+def _drawing_xml_raster(emu_w: int, emu_h: int, rId: str, alt: str) -> str:
+    """Build OOXML drawing element for a raster image (JPEG/PNG)."""
+    return (
+        f'<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        f'  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"'
+        f'  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
+        f'  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+        f'  xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'  <wp:inline distT="0" distB="0" distL="0" distR="0">'
+        f'    <wp:extent cx="{emu_w}" cy="{emu_h}"/>'
+        f'    <wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'    <wp:docPr id="0" name="Picture" descr="{alt}"/>'
+        f'    <wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
+        f'    <a:graphic>'
+        f'      <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'        <pic:pic>'
+        f'          <pic:nvPicPr>'
+        f'            <pic:cNvPr id="0" name="Picture"/>'
+        f'            <pic:cNvPicPr/>'
+        f'          </pic:nvPicPr>'
+        f'          <pic:blipFill>'
+        f'            <a:blip r:embed="{rId}"/>'
+        f'            <a:srcRect/>'
+        f'            <a:stretch><a:fillRect/></a:stretch>'
+        f'          </pic:blipFill>'
+        f'          <pic:spPr>'
+        f'            <a:xfrm><a:off x="0" y="0"/><a:ext cx="{emu_w}" cy="{emu_h}"/></a:xfrm>'
+        f'            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        f'          </pic:spPr>'
+        f'        </pic:pic>'
+        f'      </a:graphicData>'
+        f'    </a:graphic>'
+        f'  </wp:inline>'
+        f'</w:drawing>'
+    )
 
 
 def _push_run_simple(p, text: str, fmt, **overrides) -> None:
