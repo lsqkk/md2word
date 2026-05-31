@@ -2,7 +2,15 @@
 
 > Agent 技能文件。
 
-### v1.9.1（当前）
+### v1.9.2（当前）
+- **Mermaid 渲染重写**：SVG foreignObject 转原生 `<text>` 元素，解决 Word 不渲染 foreignObject 文字的问题
+- **Mermaid 栅格图备用**：SVG 渲染失败时自动降级为 mermaid.ink JPEG API
+- **Mermaid 文本自适应定位**：从 label transform 和 foreignObject 尺寸动态计算文本中心坐标
+- **TOC 修复**：去除 `\h` 超链接开关，避免 Word 弹"域引用外部文件"提示
+- **Heading 样式**：自动应用 Word Heading 1/2/3 样式，确保 TOC `\o` 开关可识别
+- **URL-safe base64**：修复含中文的 diagram 因 `+` 号被 URL 截断导致 404 的问题
+
+### v1.9.1
 - **TOOL 文档拆分**：MD2WORD-TOOL.md 拆分为 `skills/md2word/` 多模块文件，按需读取
 - **版本更新检查**：转换成功后自动检查 GitHub 新版本，24h 缓存免限速
 - **CLI 新增 `--no-update-check`**：禁用版本检查
