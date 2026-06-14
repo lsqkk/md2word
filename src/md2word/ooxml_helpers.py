@@ -514,12 +514,26 @@ def create_list_num_id(doc: Document, list_type: str = "bullet") -> int:
     ]
     next_num_id = max(num_ids) + 1 if num_ids else 1
 
-    num_xml = (
-        f'<w:num xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
-        f' w:numId="{next_num_id}">'
-        f'  <w:abstractNumId w:val="{abstract_id}"/>'
-        f'</w:num>'
-    )
+    if list_type == "ordered":
+        # Each <ol> block must start at 1.  Without an explicit
+        # startOverride Word may continue numbering from a previous
+        # <w:num> instance that shares the same abstractNum.
+        num_xml = (
+            f'<w:num xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+            f' w:numId="{next_num_id}">'
+            f'  <w:abstractNumId w:val="{abstract_id}"/>'
+            f'  <w:lvlOverride w:ilvl="0">'
+            f'    <w:startOverride w:val="1"/>'
+            f'  </w:lvlOverride>'
+            f'</w:num>'
+        )
+    else:
+        num_xml = (
+            f'<w:num xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+            f' w:numId="{next_num_id}">'
+            f'  <w:abstractNumId w:val="{abstract_id}"/>'
+            f'</w:num>'
+        )
     numbering_xml.append(parse_xml(num_xml))
     return next_num_id
 

@@ -45,14 +45,16 @@ _GB_STANDARDS: dict[str, dict] = {
 
 
 def fix_ooxml_metadata(output_path: str | Path) -> None:
-    """Post-process docx ZIP to fix thumbnail + application name.
+    """Post-process docx ZIP to fix thumbnail, language, and application name.
 
-    python-docx embeds a blank ``docProps/thumbnail.jpeg`` that makes
-    Windows show a white box instead of a content preview.  We strip
-    it so Windows generates a preview from the actual document content.
-
-    Also fixes the Application name from "Microsoft Macintosh Word"
-    to "Microsoft Office Word".
+    Fixes applied:
+    1. Strip ``docProps/thumbnail.jpeg`` (blank preview) — lets Windows
+       generate a content preview from the document.
+    2. Fix ``w:eastAsia="en-US"`` → ``"zh-CN"`` in *styles.xml* docDefaults
+       so new text added in Word uses Chinese fonts, not Japanese fallback.
+    3. Fix ``w:themeFontLang w:eastAsia="ja-JP"`` → ``"zh-CN"`` in
+       *settings.xml* so theme-based font fallback targets Chinese fonts.
+    4. Application name "Microsoft Macintosh Word" → "Microsoft Office Word".
     """
     path = Path(output_path)
     buf = path.read_bytes()
@@ -85,6 +87,26 @@ def fix_ooxml_metadata(output_path: str | Path) -> None:
                     if without_thumb != raw.decode("utf-8"):
                         changed = True
                     raw = without_thumb.encode("utf-8")
+                elif item.filename == "word/styles.xml":
+                    # Fix East-Asian language so Word uses Chinese font
+                    # fallback instead of Japanese when user adds new text.
+                    text = raw.decode("utf-8")
+                    fixed = text.replace(
+                        'w:eastAsia="en-US"', 'w:eastAsia="zh-CN"'
+                    )
+                    if fixed != text:
+                        changed = True
+                    raw = fixed.encode("utf-8")
+                elif item.filename == "word/settings.xml":
+                    # Fix theme font language from ja-JP → zh-CN so that
+                    # theme-based font fallback resolves to Chinese fonts.
+                    text = raw.decode("utf-8")
+                    fixed = text.replace(
+                        'w:eastAsia="ja-JP"', 'w:eastAsia="zh-CN"'
+                    )
+                    if fixed != text:
+                        changed = True
+                    raw = fixed.encode("utf-8")
                 zout.writestr(item, raw)
 
     if changed:

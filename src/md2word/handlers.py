@@ -112,9 +112,34 @@ def preprocess_extended_syntax(text: str) -> str:
     """Pre-process markdown to convert extended syntax to HTML tags.
 
     Handles: ~~strikethrough~~, ==highlight==, ^sup^, ~sub~
+    Content inside code blocks (```...```) and inline code spans (`...`)
+    is preserved and not processed.
     """
+    # 1. Extract and protect code blocks/spans with placeholders
+    placeholders: dict[str, str] = {}
+
+    # Protect triple-backtick code blocks first
+    def _save_code_block(m):
+        key = f"\x00CB{len(placeholders)}\x00"
+        placeholders[key] = m.group(0)
+        return key
+    text = re.sub(r'```[\s\S]*?```', _save_code_block, text)
+
+    # Protect inline code spans (backtick pairs)
+    def _save_code_span(m):
+        key = f"\x00IC{len(placeholders)}\x00"
+        placeholders[key] = m.group(0)
+        return key
+    text = re.sub(r'`[^`]*`', _save_code_span, text)
+
+    # 2. Apply extended syntax patterns on unprotected text only
     for pattern, replacement in _EXTRA_SYNTAX_PREPROC:
         text = pattern.sub(replacement, text)
+
+    # 3. Restore placeholders in reverse order (inner first)
+    for key in reversed(list(placeholders.keys())):
+        text = text.replace(key, placeholders[key])
+
     return text
 
 
@@ -293,6 +318,8 @@ def _build_inline_runs_core(
     for child in elem:
         tag = child.tag
         if tag == "br":
+            if child.tail:
+                _pd(child.tail)
             continue
 
         if skip_tags and tag in skip_tags:
@@ -329,6 +356,15 @@ def _build_inline_runs_core(
             _pd(child.text or "", superscript=True)
         elif tag == "sub":
             _pd(child.text or "", subscript=True)
+        elif tag == "p":
+            # <p> inside <li> (markdown wraps multiline content) —
+            # recursively process its children so <strong>, <code>,
+            # <br> tails, etc. are not lost.
+            _build_inline_runs_core(doc, p, child, base_fmt,
+                                    fn_map=fn_map,
+                                    skip_tags=skip_tags,
+                                    enable_footnotes=enable_footnotes,
+                                    enable_cross_ref=enable_cross_ref)
         else:
             _pd(child.text or "")
 
